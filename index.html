@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jerry World: Send It!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Start Screen -->
+    <div id="startScreen" class="start-screen">
+        <!-- Snow layer behind content -->
+        <div class="snow-layer"></div>
+        
+        <!-- Content overlay above snow -->
+        <div class="start-content">
+            <h1>JERRY WORLD</h1>
+            <h2>SEND IT!</h2>
+            <button id="startButton">START GAME</button>
+        </div>
+    </div>
+
+    <!-- Game Container (initially hidden) -->
+    <div class="game-container" style="display: none;">
+        <canvas id="gameCanvas"></canvas>
+        <div id="score">SCORE: 0</div>
+    </div>
+    
+    <!-- Updated audio elements with explicit controls for debugging -->
+    <div style="display: none;">
+        <audio id="turns_audio" preload="auto">
+            <source src="turns_audio.m4a" type="audio/mp4">
+        </audio>
+        <audio id="fast_audio" preload="auto">
+            <source src="fast_audio.m4a" type="audio/mp4">
+        </audio>
+        <audio id="crash_audio" preload="auto">
+            <source src="crash_audio.m4a" type="audio/mp4">
+        </audio>
+        <audio id="soundtrack" preload="auto" loop>
+            <source src="Winter Arcade.mp3" type="audio/mpeg">
+        </audio>
+    </div>
+    
+    <script src="game.js"></script>
+</body>
+</html> 
