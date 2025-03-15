@@ -716,6 +716,9 @@ class Game {
 
         // Add soundtrack reference
         this.soundtrack = document.getElementById('soundtrack');
+        
+        // Add game start time tracking for play duration
+        this.gameStartTime = Date.now();
     }
 
     createTrackMarkers() {
@@ -882,6 +885,12 @@ class Game {
                     this.speedProgression.lastLevelUpScore = currentScore;
                     this.speedProgression.levelUpMessageShown = false;
                     this.updateGameSpeeds();
+                    
+                    // Track level up event
+                    sendGAEvent('level_up', {
+                        'level': level + 1,
+                        'score': currentScore
+                    });
                     
                     // Special message when reaching level 3 (zigzaggers appear)
                     if (oldLevel < 2 && level >= 2) {
@@ -1332,8 +1341,22 @@ class Game {
             </div>
         `;
         
-        // Ensure soundtrack continues playing
-        // No need to do anything since it's already looping
+        // Calculate play duration in seconds
+        const playDurationSeconds = Math.floor((Date.now() - this.gameStartTime) / 1000);
+        
+        // Track game over event with comprehensive data
+        sendGAEvent('game_over', {
+            'score': this.finalScore,
+            'level': this.speedProgression.currentLevel + 1,
+            'play_duration_seconds': playDurationSeconds,
+            'timestamp': new Date().toISOString()
+        });
+        
+        // Track score as a separate event for easier analytics
+        sendGAEvent('score_recorded', {
+            'score': this.finalScore,
+            'play_duration_seconds': playDurationSeconds
+        });
     }
 
     draw() {
@@ -1528,15 +1551,29 @@ class Game {
     }
 }
 
+// Google Analytics event tracking function
+function sendGAEvent(eventName, eventParams = {}) {
+    if (window.gtag) {
+        gtag('event', eventName, eventParams);
+        console.log('GA Event:', eventName, eventParams);
+    }
+}
+
 // Start screen handling
 document.addEventListener('DOMContentLoaded', function() {
+    // Track page visit
+    sendGAEvent('page_view', {
+        'page_title': 'Jerry World: Send It!',
+        'page_location': window.location.href
+    });
+    
     const startScreen = document.getElementById('startScreen');
     const startButton = document.getElementById('startButton');
     const gameContainer = document.querySelector('.game-container');
     const soundtrack = document.getElementById('soundtrack');
     
     // Set soundtrack volume lower than sound effects
-    soundtrack.volume = 0.3; // 30% volume
+    soundtrack.volume = 0.3;
     
     startButton.addEventListener('click', function() {
         // Hide start screen
@@ -1548,6 +1585,11 @@ document.addEventListener('DOMContentLoaded', function() {
         // Start the soundtrack
         playSoundtrack();
         
+        // Track game start
+        sendGAEvent('game_start', {
+            'timestamp': new Date().toISOString()
+        });
+        
         // Start the game
         new Game();
     });
@@ -1556,7 +1598,6 @@ document.addEventListener('DOMContentLoaded', function() {
     function playSoundtrack() {
         soundtrack.play().catch(error => {
             console.error("Error playing soundtrack:", error);
-            // Try again with user interaction
             document.addEventListener('click', () => {
                 soundtrack.play().catch(e => console.error("Still can't play soundtrack:", e));
             }, { once: true });
