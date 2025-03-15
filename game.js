@@ -704,11 +704,9 @@ class Game {
         // Load audio
         this.loadAudio();
         
-        // Updated touch control properties
+        // Updated touch control properties without debugging
         this.touchControls = {
-            enabled: this.isTouchDevice(),
-            activeTouch: false,
-            touchSide: null, // 'left', 'right', or null
+            enabled: true,
             leftPressed: false,
             rightPressed: false
         };
@@ -717,19 +715,6 @@ class Game {
         this.bindEvents();
         this.setupTouchControls();
         this.gameLoop();
-
-        // Update zigzagger delay duration to 5 seconds
-        this.zigzaggerDelay = {
-            active: false,
-            startTime: 0,
-            duration: 5000 // 5 seconds (reduced from 20000)
-        };
-
-        // Add soundtrack reference
-        this.soundtrack = document.getElementById('soundtrack');
-        
-        // Add game start time tracking for play duration
-        this.gameStartTime = Date.now();
     }
 
     createTrackMarkers() {
@@ -1579,16 +1564,17 @@ class Game {
     }
     
     setupTouchControls() {
-        if (!this.touchControls.enabled) return;
-        
-        // Add touch control elements
+        // Create touch controls
         this.createTouchControls();
         
-        // Add touch event listeners to the canvas
-        this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
-        this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
-        this.canvas.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
-        this.canvas.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: false });
+        // Use document instead of canvas for touch events
+        const gameContainer = document.querySelector('.game-container');
+        
+        // Add non-passive event listeners
+        gameContainer.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+        gameContainer.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+        gameContainer.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
+        gameContainer.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: false });
     }
     
     createTouchControls() {
@@ -1596,10 +1582,10 @@ class Game {
         const touchOverlay = document.createElement('div');
         touchOverlay.className = 'touch-controls';
         touchOverlay.innerHTML = `
-            <div class="touch-zone touch-left">
+            <div class="touch-zone touch-left" id="touchLeft">
                 <div class="touch-indicator">◀</div>
             </div>
-            <div class="touch-zone touch-right">
+            <div class="touch-zone touch-right" id="touchRight">
                 <div class="touch-indicator">▶</div>
             </div>
             <div class="touch-hint">Tap and hold left or right side to move</div>
@@ -1617,7 +1603,6 @@ class Game {
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    pointer-events: none;
                     z-index: 100;
                 }
                 .touch-zone {
@@ -1628,12 +1613,11 @@ class Game {
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    pointer-events: auto;
-                    opacity: 0.1;
-                    transition: opacity 0.3s;
+                    background-color: rgba(255,255,255,0.05);
+                    transition: background-color 0.3s;
                 }
                 .touch-zone.active {
-                    opacity: 0.3;
+                    background-color: rgba(255,255,255,0.2);
                 }
                 .touch-left {
                     left: 0;
@@ -1645,7 +1629,8 @@ class Game {
                     font-size: 48px;
                     color: white;
                     text-shadow: 0 0 10px rgba(0,0,0,0.5);
-                    opacity: 0.7;
+                    opacity: 0.5;
+                    pointer-events: none;
                 }
                 .touch-hint {
                     position: absolute;
@@ -1658,6 +1643,7 @@ class Game {
                     padding: 10px;
                     font-family: 'Press Start 2P', cursive;
                     font-size: 12px;
+                    pointer-events: none;
                     animation: fadeOut 3s forwards;
                     animation-delay: 5s;
                 }
@@ -1665,25 +1651,40 @@ class Game {
                     from { opacity: 1; }
                     to { opacity: 0; }
                 }
-                @media (orientation: portrait) {
-                    #gameCanvas {
-                        width: 100%;
-                        height: auto;
-                    }
-                    .game-container {
-                        width: 100%;
-                        height: auto;
-                    }
-                }
             `;
             document.head.appendChild(style);
         }
         
         // Store references to touch zones
         this.touchZones = {
-            left: document.querySelector('.touch-left'),
-            right: document.querySelector('.touch-right')
+            left: document.getElementById('touchLeft'),
+            right: document.getElementById('touchRight')
         };
+        
+        // Add direct click/touch handlers to zones
+        this.touchZones.left.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.touchControls.leftPressed = true;
+            this.touchZones.left.classList.add('active');
+        });
+        
+        this.touchZones.left.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            this.touchControls.leftPressed = false;
+            this.touchZones.left.classList.remove('active');
+        });
+        
+        this.touchZones.right.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.touchControls.rightPressed = true;
+            this.touchZones.right.classList.add('active');
+        });
+        
+        this.touchZones.right.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            this.touchControls.rightPressed = false;
+            this.touchZones.right.classList.remove('active');
+        });
     }
     
     handleTouchStart(e) {
@@ -1693,10 +1694,11 @@ class Game {
         for (let i = 0; i < e.changedTouches.length; i++) {
             const touch = e.changedTouches[i];
             const touchX = touch.clientX;
-            const canvasRect = this.canvas.getBoundingClientRect();
+            const containerRect = document.querySelector('.game-container').getBoundingClientRect();
+            const midpoint = containerRect.left + containerRect.width / 2;
             
             // Determine which side of the screen was touched
-            if (touchX < canvasRect.width / 2) {
+            if (touchX < midpoint) {
                 // Left side touched
                 this.touchControls.leftPressed = true;
                 this.touchZones.left.classList.add('active');
@@ -1711,27 +1713,34 @@ class Game {
     handleTouchMove(e) {
         e.preventDefault();
         
-        // Reset touch states
-        this.touchControls.leftPressed = false;
-        this.touchControls.rightPressed = false;
-        this.touchZones.left.classList.remove('active');
-        this.touchZones.right.classList.remove('active');
-        
         // Process each touch point
         for (let i = 0; i < e.touches.length; i++) {
             const touch = e.touches[i];
             const touchX = touch.clientX;
-            const canvasRect = this.canvas.getBoundingClientRect();
+            const containerRect = document.querySelector('.game-container').getBoundingClientRect();
+            const midpoint = containerRect.left + containerRect.width / 2;
             
             // Determine which side of the screen is being touched
-            if (touchX < canvasRect.width / 2) {
+            if (touchX < midpoint) {
                 // Left side touched
                 this.touchControls.leftPressed = true;
                 this.touchZones.left.classList.add('active');
+                
+                // If finger moved from right to left
+                if (this.touchControls.rightPressed) {
+                    this.touchControls.rightPressed = false;
+                    this.touchZones.right.classList.remove('active');
+                }
             } else {
                 // Right side touched
                 this.touchControls.rightPressed = true;
                 this.touchZones.right.classList.add('active');
+                
+                // If finger moved from left to right
+                if (this.touchControls.leftPressed) {
+                    this.touchControls.leftPressed = false;
+                    this.touchZones.left.classList.remove('active');
+                }
             }
         }
     }
@@ -1739,22 +1748,46 @@ class Game {
     handleTouchEnd(e) {
         e.preventDefault();
         
-        // Process each ended touch point
-        for (let i = 0; i < e.changedTouches.length; i++) {
-            const touch = e.changedTouches[i];
+        // If no touches remain, reset all
+        if (e.touches.length === 0) {
+            this.touchControls.leftPressed = false;
+            this.touchControls.rightPressed = false;
+            this.touchZones.left.classList.remove('active');
+            this.touchZones.right.classList.remove('active');
+            return;
+        }
+        
+        // Process remaining touches to maintain correct state
+        let leftActive = false;
+        let rightActive = false;
+        
+        for (let i = 0; i < e.touches.length; i++) {
+            const touch = e.touches[i];
             const touchX = touch.clientX;
-            const canvasRect = this.canvas.getBoundingClientRect();
+            const containerRect = document.querySelector('.game-container').getBoundingClientRect();
+            const midpoint = containerRect.left + containerRect.width / 2;
             
-            // Determine which side of the screen was released
-            if (touchX < canvasRect.width / 2) {
-                // Left side released
-                this.touchControls.leftPressed = false;
-                this.touchZones.left.classList.remove('active');
+            if (touchX < midpoint) {
+                leftActive = true;
             } else {
-                // Right side released
-                this.touchControls.rightPressed = false;
-                this.touchZones.right.classList.remove('active');
+                rightActive = true;
             }
+        }
+        
+        // Update states based on remaining touches
+        this.touchControls.leftPressed = leftActive;
+        this.touchControls.rightPressed = rightActive;
+        
+        if (leftActive) {
+            this.touchZones.left.classList.add('active');
+        } else {
+            this.touchZones.left.classList.remove('active');
+        }
+        
+        if (rightActive) {
+            this.touchZones.right.classList.add('active');
+        } else {
+            this.touchZones.right.classList.remove('active');
         }
     }
 }
