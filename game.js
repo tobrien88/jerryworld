@@ -704,17 +704,29 @@ class Game {
         // Load audio
         this.loadAudio();
         
-        // Updated touch control properties without debugging
+        // Touch state tracking
         this.touchControls = {
-            enabled: true,
-            leftPressed: false,
-            rightPressed: false
+            left: false,
+            right: false
         };
         
         // Initialize game
         this.bindEvents();
         this.setupTouchControls();
         this.gameLoop();
+
+        // Update zigzagger delay duration to 5 seconds
+        this.zigzaggerDelay = {
+            active: false,
+            startTime: 0,
+            duration: 5000 // 5 seconds (reduced from 20000)
+        };
+
+        // Add soundtrack reference
+        this.soundtrack = document.getElementById('soundtrack');
+        
+        // Add game start time tracking for play duration
+        this.gameStartTime = Date.now();
     }
 
     createTrackMarkers() {
@@ -1149,19 +1161,11 @@ class Game {
         const previousSkiAngle = this.player.skiAngle;
         let directionChanged = false;
         
-        // Handle keyboard controls
-        const keyboardLeft = this.keys['ArrowLeft'] || this.keys['a'];
-        const keyboardRight = this.keys['ArrowRight'] || this.keys['d'];
+        // Combine keyboard and touch inputs
+        const movingLeft = (this.keys['ArrowLeft'] || this.keys['a'] || this.touchControls.left);
+        const movingRight = (this.keys['ArrowRight'] || this.keys['d'] || this.touchControls.right);
         
-        // Handle touch controls
-        const touchLeft = this.touchControls.leftPressed;
-        const touchRight = this.touchControls.rightPressed;
-        
-        // Combined controls (keyboard or touch)
-        const moveLeft = keyboardLeft || touchLeft;
-        const moveRight = keyboardRight || touchRight;
-        
-        if (moveLeft && this.player.x > 0) {
+        if (movingLeft && this.player.x > 0) {
             this.player.x -= this.player.speed;
             
             // Check if direction actually changed
@@ -1170,7 +1174,7 @@ class Game {
             }
             
             this.player.skiAngle = Math.PI / 4;
-        } else if (moveRight && this.player.x < this.canvas.width - this.player.width) {
+        } else if (movingRight && this.player.x < this.canvas.width - this.player.width) {
             this.player.x += this.player.speed;
             
             // Check if direction actually changed
@@ -1185,7 +1189,6 @@ class Game {
         
         // Play turn sound if direction changed and not already playing
         if (directionChanged && !this.audio.turnSoundPlaying) {
-            console.log(`Direction change detected (level: ${this.speedProgression.currentLevel})`);
             this.playSound('turns');
         }
 
@@ -1344,26 +1347,37 @@ class Game {
                 <h2>GAME OVER</h2>
                 <p>FINAL SCORE</p>
                 <p>${formattedScore}</p>
-                <button id="continueButton">CONTINUE?</button>
+                <button onclick="location.reload()">CONTINUE?</button>
             </div>
         `;
         
-        // Add both click and touch event listeners to the continue button
-        const continueButton = document.getElementById('continueButton');
+        // Calculate play duration in seconds
+        const playDurationSeconds = Math.floor((Date.now() - this.gameStartTime) / 1000);
         
-        // Add touch event listener
-        continueButton.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // Prevent default to avoid delay
-            location.reload();
+        // Track game over event with comprehensive data
+        sendGAEvent('game_over', {
+            'score': this.finalScore,
+            'level': this.speedProgression.currentLevel + 1,
+            'play_duration_seconds': playDurationSeconds,
+            'timestamp': new Date().toISOString()
         });
         
-        // Keep click for non-touch devices
-        continueButton.addEventListener('click', () => {
-            location.reload();
+        // Track score as a separate event for easier analytics
+        sendGAEvent('score_recorded', {
+            'score': this.finalScore,
+            'play_duration_seconds': playDurationSeconds
         });
-        
-        // Ensure soundtrack continues playing
-        // No need to do anything since it's already looping
+
+        // Make continue button touch-friendly
+        setTimeout(() => {
+            const continueButton = document.querySelector('.game-over-content button');
+            if (continueButton) {
+                continueButton.addEventListener('touchstart', function(e) {
+                    e.preventDefault();
+                    this.click();
+                });
+            }
+        }, 100);
     }
 
     draw() {
@@ -1557,238 +1571,54 @@ class Game {
         }
     }
 
-    isTouchDevice() {
-        return ('ontouchstart' in window) || 
-               (navigator.maxTouchPoints > 0) || 
-               (navigator.msMaxTouchPoints > 0);
-    }
-    
     setupTouchControls() {
-        // Create touch controls
-        this.createTouchControls();
+        const leftTouchArea = document.getElementById('leftTouchArea');
+        const rightTouchArea = document.getElementById('rightTouchArea');
         
-        // Use document instead of canvas for touch events
-        const gameContainer = document.querySelector('.game-container');
-        
-        // Add non-passive event listeners
-        gameContainer.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
-        gameContainer.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
-        gameContainer.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
-        gameContainer.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: false });
-    }
-    
-    createTouchControls() {
-        // Create touch control overlay with visible left/right zones
-        const touchOverlay = document.createElement('div');
-        touchOverlay.className = 'touch-controls';
-        touchOverlay.innerHTML = `
-            <div class="touch-zone touch-left" id="touchLeft">
-                <div class="touch-indicator">◀</div>
-            </div>
-            <div class="touch-zone touch-right" id="touchRight">
-                <div class="touch-indicator">▶</div>
-            </div>
-            <div class="touch-hint">Tap and hold left or right side to move</div>
-        `;
-        document.querySelector('.game-container').appendChild(touchOverlay);
-        
-        // Add CSS for touch controls
-        if (!document.getElementById('touch-controls-css')) {
-            const style = document.createElement('style');
-            style.id = 'touch-controls-css';
-            style.textContent = `
-                .touch-controls {
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    z-index: 100;
-                }
-                .touch-zone {
-                    position: absolute;
-                    top: 0;
-                    height: 100%;
-                    width: 50%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    background-color: rgba(255,255,255,0.05);
-                    transition: background-color 0.3s;
-                }
-                .touch-zone.active {
-                    background-color: rgba(255,255,255,0.2);
-                }
-                .touch-left {
-                    left: 0;
-                }
-                .touch-right {
-                    right: 0;
-                }
-                .touch-indicator {
-                    font-size: 48px;
-                    color: white;
-                    text-shadow: 0 0 10px rgba(0,0,0,0.5);
-                    opacity: 0.5;
-                    pointer-events: none;
-                }
-                .touch-hint {
-                    position: absolute;
-                    bottom: 20px;
-                    left: 0;
-                    width: 100%;
-                    text-align: center;
-                    background-color: rgba(0, 0, 0, 0.5);
-                    color: white;
-                    padding: 10px;
-                    font-family: 'Press Start 2P', cursive;
-                    font-size: 12px;
-                    pointer-events: none;
-                    animation: fadeOut 3s forwards;
-                    animation-delay: 5s;
-                }
-                @keyframes fadeOut {
-                    from { opacity: 1; }
-                    to { opacity: 0; }
-                }
-            `;
-            document.head.appendChild(style);
-        }
-        
-        // Store references to touch zones
-        this.touchZones = {
-            left: document.getElementById('touchLeft'),
-            right: document.getElementById('touchRight')
-        };
-        
-        // Add direct click/touch handlers to zones
-        this.touchZones.left.addEventListener('touchstart', (e) => {
+        // Left touch area
+        leftTouchArea.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            this.touchControls.leftPressed = true;
-            this.touchZones.left.classList.add('active');
+            this.touchControls.left = true;
+            leftTouchArea.classList.add('active'); // Optional visual feedback
         });
         
-        this.touchZones.left.addEventListener('touchend', (e) => {
+        leftTouchArea.addEventListener('touchend', (e) => {
             e.preventDefault();
-            this.touchControls.leftPressed = false;
-            this.touchZones.left.classList.remove('active');
+            this.touchControls.left = false;
+            leftTouchArea.classList.remove('active');
         });
         
-        this.touchZones.right.addEventListener('touchstart', (e) => {
+        leftTouchArea.addEventListener('touchcancel', (e) => {
             e.preventDefault();
-            this.touchControls.rightPressed = true;
-            this.touchZones.right.classList.add('active');
+            this.touchControls.left = false;
+            leftTouchArea.classList.remove('active');
         });
         
-        this.touchZones.right.addEventListener('touchend', (e) => {
+        // Right touch area
+        rightTouchArea.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            this.touchControls.rightPressed = false;
-            this.touchZones.right.classList.remove('active');
+            this.touchControls.right = true;
+            rightTouchArea.classList.add('active'); // Optional visual feedback
         });
-    }
-    
-    handleTouchStart(e) {
-        e.preventDefault();
         
-        // Process each touch point
-        for (let i = 0; i < e.changedTouches.length; i++) {
-            const touch = e.changedTouches[i];
-            const touchX = touch.clientX;
-            const containerRect = document.querySelector('.game-container').getBoundingClientRect();
-            const midpoint = containerRect.left + containerRect.width / 2;
-            
-            // Determine which side of the screen was touched
-            if (touchX < midpoint) {
-                // Left side touched
-                this.touchControls.leftPressed = true;
-                this.touchZones.left.classList.add('active');
-            } else {
-                // Right side touched
-                this.touchControls.rightPressed = true;
-                this.touchZones.right.classList.add('active');
+        rightTouchArea.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            this.touchControls.right = false;
+            rightTouchArea.classList.remove('active');
+        });
+        
+        rightTouchArea.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            this.touchControls.right = false;
+            rightTouchArea.classList.remove('active');
+        });
+        
+        // Prevent touchmove to avoid scrolling while playing
+        document.addEventListener('touchmove', (e) => {
+            if (this.gameStarted && !this.gameOver) {
+                e.preventDefault();
             }
-        }
-    }
-    
-    handleTouchMove(e) {
-        e.preventDefault();
-        
-        // Process each touch point
-        for (let i = 0; i < e.touches.length; i++) {
-            const touch = e.touches[i];
-            const touchX = touch.clientX;
-            const containerRect = document.querySelector('.game-container').getBoundingClientRect();
-            const midpoint = containerRect.left + containerRect.width / 2;
-            
-            // Determine which side of the screen is being touched
-            if (touchX < midpoint) {
-                // Left side touched
-                this.touchControls.leftPressed = true;
-                this.touchZones.left.classList.add('active');
-                
-                // If finger moved from right to left
-                if (this.touchControls.rightPressed) {
-                    this.touchControls.rightPressed = false;
-                    this.touchZones.right.classList.remove('active');
-                }
-            } else {
-                // Right side touched
-                this.touchControls.rightPressed = true;
-                this.touchZones.right.classList.add('active');
-                
-                // If finger moved from left to right
-                if (this.touchControls.leftPressed) {
-                    this.touchControls.leftPressed = false;
-                    this.touchZones.left.classList.remove('active');
-                }
-            }
-        }
-    }
-    
-    handleTouchEnd(e) {
-        e.preventDefault();
-        
-        // If no touches remain, reset all
-        if (e.touches.length === 0) {
-            this.touchControls.leftPressed = false;
-            this.touchControls.rightPressed = false;
-            this.touchZones.left.classList.remove('active');
-            this.touchZones.right.classList.remove('active');
-            return;
-        }
-        
-        // Process remaining touches to maintain correct state
-        let leftActive = false;
-        let rightActive = false;
-        
-        for (let i = 0; i < e.touches.length; i++) {
-            const touch = e.touches[i];
-            const touchX = touch.clientX;
-            const containerRect = document.querySelector('.game-container').getBoundingClientRect();
-            const midpoint = containerRect.left + containerRect.width / 2;
-            
-            if (touchX < midpoint) {
-                leftActive = true;
-            } else {
-                rightActive = true;
-            }
-        }
-        
-        // Update states based on remaining touches
-        this.touchControls.leftPressed = leftActive;
-        this.touchControls.rightPressed = rightActive;
-        
-        if (leftActive) {
-            this.touchZones.left.classList.add('active');
-        } else {
-            this.touchZones.left.classList.remove('active');
-        }
-        
-        if (rightActive) {
-            this.touchZones.right.classList.add('active');
-        } else {
-            this.touchZones.right.classList.remove('active');
-        }
+        }, { passive: false });
     }
 }
 
@@ -1844,4 +1674,22 @@ document.addEventListener('DOMContentLoaded', function() {
             }, { once: true });
         });
     }
-}); 
+
+    // Make start button touch-friendly
+    startButton.addEventListener('touchstart', function(e) {
+        e.preventDefault(); // Prevent default touch behavior
+        this.click(); // Trigger the click event
+    });
+});
+
+// Prevent default touch behavior on the document
+document.addEventListener('touchstart', function(e) {
+    if (e.target.tagName !== 'BUTTON') {
+        e.preventDefault();
+    }
+}, { passive: false });
+
+// Prevent pull-to-refresh and other browser gestures
+document.body.addEventListener('touchmove', function(e) {
+    e.preventDefault();
+}, { passive: false }); 

@@ -18,16 +18,6 @@
 
       gtag('config', 'G-ZM1HF38NLJ');
     </script>
-    <style>
-        /* Prevent touch actions from causing scrolling or zooming */
-        html, body {
-            overflow: hidden;
-            position: fixed;
-            width: 100%;
-            height: 100%;
-            touch-action: none;
-        }
-    </style>
 </head>
 <body>
     <!-- Start Screen -->
@@ -47,6 +37,10 @@
     <div class="game-container" style="display: none;">
         <canvas id="gameCanvas"></canvas>
         <div id="score">SCORE: 0</div>
+        
+        <!-- Touch control areas (invisible) -->
+        <div id="leftTouchArea" class="touch-control left-control"></div>
+        <div id="rightTouchArea" class="touch-control right-control"></div>
     </div>
     
     <!-- Updated audio elements with explicit controls for debugging -->
