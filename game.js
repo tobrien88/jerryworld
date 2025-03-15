@@ -1344,26 +1344,26 @@ class Game {
                 <h2>GAME OVER</h2>
                 <p>FINAL SCORE</p>
                 <p>${formattedScore}</p>
-                <button onclick="location.reload()">CONTINUE?</button>
+                <button id="continueButton">CONTINUE?</button>
             </div>
         `;
         
-        // Calculate play duration in seconds
-        const playDurationSeconds = Math.floor((Date.now() - this.gameStartTime) / 1000);
+        // Add both click and touch event listeners to the continue button
+        const continueButton = document.getElementById('continueButton');
         
-        // Track game over event with comprehensive data
-        sendGAEvent('game_over', {
-            'score': this.finalScore,
-            'level': this.speedProgression.currentLevel + 1,
-            'play_duration_seconds': playDurationSeconds,
-            'timestamp': new Date().toISOString()
+        // Add touch event listener
+        continueButton.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent default to avoid delay
+            location.reload();
         });
         
-        // Track score as a separate event for easier analytics
-        sendGAEvent('score_recorded', {
-            'score': this.finalScore,
-            'play_duration_seconds': playDurationSeconds
+        // Keep click for non-touch devices
+        continueButton.addEventListener('click', () => {
+            location.reload();
         });
+        
+        // Ensure soundtrack continues playing
+        // No need to do anything since it's already looping
     }
 
     draw() {
