@@ -704,7 +704,18 @@ class Game {
         // Load audio
         this.loadAudio();
         
+        // Updated touch control properties
+        this.touchControls = {
+            enabled: this.isTouchDevice(),
+            activeTouch: false,
+            touchSide: null, // 'left', 'right', or null
+            leftPressed: false,
+            rightPressed: false
+        };
+        
+        // Initialize game
         this.bindEvents();
+        this.setupTouchControls();
         this.gameLoop();
 
         // Update zigzagger delay duration to 5 seconds
@@ -1149,11 +1160,23 @@ class Game {
         // Update speed level based on score
         this.updateSpeedLevel();
 
-        // Update player movement with fixed sound triggering
+        // Update player movement with both keyboard and touch controls
         const previousSkiAngle = this.player.skiAngle;
         let directionChanged = false;
         
-        if ((this.keys['ArrowLeft'] || this.keys['a']) && this.player.x > 0) {
+        // Handle keyboard controls
+        const keyboardLeft = this.keys['ArrowLeft'] || this.keys['a'];
+        const keyboardRight = this.keys['ArrowRight'] || this.keys['d'];
+        
+        // Handle touch controls
+        const touchLeft = this.touchControls.leftPressed;
+        const touchRight = this.touchControls.rightPressed;
+        
+        // Combined controls (keyboard or touch)
+        const moveLeft = keyboardLeft || touchLeft;
+        const moveRight = keyboardRight || touchRight;
+        
+        if (moveLeft && this.player.x > 0) {
             this.player.x -= this.player.speed;
             
             // Check if direction actually changed
@@ -1162,8 +1185,7 @@ class Game {
             }
             
             this.player.skiAngle = Math.PI / 4;
-        } else if ((this.keys['ArrowRight'] || this.keys['d']) && 
-            this.player.x < this.canvas.width - this.player.width) {
+        } else if (moveRight && this.player.x < this.canvas.width - this.player.width) {
             this.player.x += this.player.speed;
             
             // Check if direction actually changed
@@ -1547,6 +1569,192 @@ class Game {
                 }
                 this.audio.currentPriority = 0;
             };
+        }
+    }
+
+    isTouchDevice() {
+        return ('ontouchstart' in window) || 
+               (navigator.maxTouchPoints > 0) || 
+               (navigator.msMaxTouchPoints > 0);
+    }
+    
+    setupTouchControls() {
+        if (!this.touchControls.enabled) return;
+        
+        // Add touch control elements
+        this.createTouchControls();
+        
+        // Add touch event listeners to the canvas
+        this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
+        this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
+        this.canvas.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: false });
+        this.canvas.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: false });
+    }
+    
+    createTouchControls() {
+        // Create touch control overlay with visible left/right zones
+        const touchOverlay = document.createElement('div');
+        touchOverlay.className = 'touch-controls';
+        touchOverlay.innerHTML = `
+            <div class="touch-zone touch-left">
+                <div class="touch-indicator">◀</div>
+            </div>
+            <div class="touch-zone touch-right">
+                <div class="touch-indicator">▶</div>
+            </div>
+            <div class="touch-hint">Tap and hold left or right side to move</div>
+        `;
+        document.querySelector('.game-container').appendChild(touchOverlay);
+        
+        // Add CSS for touch controls
+        if (!document.getElementById('touch-controls-css')) {
+            const style = document.createElement('style');
+            style.id = 'touch-controls-css';
+            style.textContent = `
+                .touch-controls {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    pointer-events: none;
+                    z-index: 100;
+                }
+                .touch-zone {
+                    position: absolute;
+                    top: 0;
+                    height: 100%;
+                    width: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    pointer-events: auto;
+                    opacity: 0.1;
+                    transition: opacity 0.3s;
+                }
+                .touch-zone.active {
+                    opacity: 0.3;
+                }
+                .touch-left {
+                    left: 0;
+                }
+                .touch-right {
+                    right: 0;
+                }
+                .touch-indicator {
+                    font-size: 48px;
+                    color: white;
+                    text-shadow: 0 0 10px rgba(0,0,0,0.5);
+                    opacity: 0.7;
+                }
+                .touch-hint {
+                    position: absolute;
+                    bottom: 20px;
+                    left: 0;
+                    width: 100%;
+                    text-align: center;
+                    background-color: rgba(0, 0, 0, 0.5);
+                    color: white;
+                    padding: 10px;
+                    font-family: 'Press Start 2P', cursive;
+                    font-size: 12px;
+                    animation: fadeOut 3s forwards;
+                    animation-delay: 5s;
+                }
+                @keyframes fadeOut {
+                    from { opacity: 1; }
+                    to { opacity: 0; }
+                }
+                @media (orientation: portrait) {
+                    #gameCanvas {
+                        width: 100%;
+                        height: auto;
+                    }
+                    .game-container {
+                        width: 100%;
+                        height: auto;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        // Store references to touch zones
+        this.touchZones = {
+            left: document.querySelector('.touch-left'),
+            right: document.querySelector('.touch-right')
+        };
+    }
+    
+    handleTouchStart(e) {
+        e.preventDefault();
+        
+        // Process each touch point
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const touch = e.changedTouches[i];
+            const touchX = touch.clientX;
+            const canvasRect = this.canvas.getBoundingClientRect();
+            
+            // Determine which side of the screen was touched
+            if (touchX < canvasRect.width / 2) {
+                // Left side touched
+                this.touchControls.leftPressed = true;
+                this.touchZones.left.classList.add('active');
+            } else {
+                // Right side touched
+                this.touchControls.rightPressed = true;
+                this.touchZones.right.classList.add('active');
+            }
+        }
+    }
+    
+    handleTouchMove(e) {
+        e.preventDefault();
+        
+        // Reset touch states
+        this.touchControls.leftPressed = false;
+        this.touchControls.rightPressed = false;
+        this.touchZones.left.classList.remove('active');
+        this.touchZones.right.classList.remove('active');
+        
+        // Process each touch point
+        for (let i = 0; i < e.touches.length; i++) {
+            const touch = e.touches[i];
+            const touchX = touch.clientX;
+            const canvasRect = this.canvas.getBoundingClientRect();
+            
+            // Determine which side of the screen is being touched
+            if (touchX < canvasRect.width / 2) {
+                // Left side touched
+                this.touchControls.leftPressed = true;
+                this.touchZones.left.classList.add('active');
+            } else {
+                // Right side touched
+                this.touchControls.rightPressed = true;
+                this.touchZones.right.classList.add('active');
+            }
+        }
+    }
+    
+    handleTouchEnd(e) {
+        e.preventDefault();
+        
+        // Process each ended touch point
+        for (let i = 0; i < e.changedTouches.length; i++) {
+            const touch = e.changedTouches[i];
+            const touchX = touch.clientX;
+            const canvasRect = this.canvas.getBoundingClientRect();
+            
+            // Determine which side of the screen was released
+            if (touchX < canvasRect.width / 2) {
+                // Left side released
+                this.touchControls.leftPressed = false;
+                this.touchZones.left.classList.remove('active');
+            } else {
+                // Right side released
+                this.touchControls.rightPressed = false;
+                this.touchZones.right.classList.remove('active');
+            }
         }
     }
 }
