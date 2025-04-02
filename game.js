@@ -574,6 +574,152 @@ class Zigzagger {
     }
 }
 
+// Audio state management
+const audioState = {
+    soundtrackMuted: false,
+    soundEffectsMuted: false,
+    
+    // Save preferences to localStorage
+    savePreferences: function() {
+        try {
+            localStorage.setItem('jerryWorld_soundtrackMuted', this.soundtrackMuted);
+            localStorage.setItem('jerryWorld_soundEffectsMuted', this.soundEffectsMuted);
+        } catch (e) {
+            console.error('Could not save audio preferences:', e);
+        }
+    },
+    
+    // Load preferences from localStorage
+    loadPreferences: function() {
+        try {
+            const storedSoundtrack = localStorage.getItem('jerryWorld_soundtrackMuted');
+            const storedSoundEffects = localStorage.getItem('jerryWorld_soundEffectsMuted');
+            
+            if (storedSoundtrack !== null) {
+                this.soundtrackMuted = storedSoundtrack === 'true';
+            }
+            
+            if (storedSoundEffects !== null) {
+                this.soundEffectsMuted = storedSoundEffects === 'true';
+            }
+        } catch (e) {
+            console.error('Could not load audio preferences:', e);
+        }
+    }
+};
+
+// Tree class for edge obstacles
+class Tree {
+    constructor(x, side) {
+        this.x = x;
+        this.y = 650; // Start below screen
+        this.side = side; // 'left' or 'right' edge
+        this.scale = 0.25 + Math.random() * 0.25; // Random scale between 25-50%
+        
+        // Image will be assigned in Game class after loading
+        this.image = null;
+        
+        // Default dimensions until image is loaded
+        this.width = 30;
+        this.height = 50;
+        
+        this.active = true;
+    }
+    
+    setImage(image) {
+        if (!image || !image.complete || !image.width) {
+            console.error("Invalid or incomplete image provided to Tree");
+            return;
+        }
+        
+        this.image = image;
+        // Set dimensions based on image and scale
+        this.width = this.image.width * this.scale;
+        this.height = this.image.height * this.scale;
+    }
+    
+    update(scrollSpeed) {
+        // Move with scroll speed
+        this.y -= scrollSpeed;
+        
+        // Deactivate when off screen
+        if (this.y < -this.height) {
+            this.active = false;
+        }
+    }
+    
+    draw(ctx) {
+        // Skip if off screen (optimization)
+        if (this.y > 650 || this.y < -this.height) {
+            return;
+        }
+        
+        if (this.image && this.image.complete && this.image.width > 0) {
+            // Draw the tree image with appropriate scaling
+            ctx.drawImage(
+                this.image,
+                this.x - (this.width / 2), // Center horizontally
+                this.y,
+                this.width,
+                this.height
+            );
+        } else {
+            // Fallback if image isn't loaded
+            ctx.fillStyle = '#006400'; // Dark green
+            ctx.fillRect(this.x - 10, this.y, 20, 50);
+        }
+    }
+    
+    getHitbox() {
+        // Create a smaller hitbox that starts at the tip of the tree
+        // and allows some overlap with the branches
+        
+        // Start hitbox at the tip (top) of the tree
+        const hitboxTop = this.y + (this.height * 0.1); // Start 10% down from the top
+        
+        // Allow brushing against sides (narrower hitbox)
+        const hitboxWidth = this.width * 0.5; // Only 50% of the visual width
+        
+        // Center the hitbox within the tree visual
+        return {
+            left: this.x - (hitboxWidth / 2),
+            right: this.x + (hitboxWidth / 2),
+            top: hitboxTop,
+            bottom: this.y + this.height // Bottom remains the same (trunk)
+        };
+    }
+}
+
+// Add Track class to manage individual track segments
+class TrackSegment {
+    constructor(x, y, angle, isLeftSki) {
+        this.x = x;
+        this.y = y;
+        this.angle = angle || 0;
+        this.isLeftSki = isLeftSki;
+        this.age = 0;
+        this.maxAge = 300;
+        this.opacity = 0.6;
+        this.width = 2;
+        this.active = true;
+    }
+    
+    update(scrollSpeed) {
+        scrollSpeed = scrollSpeed || 0;
+        this.y -= scrollSpeed;
+        this.age++;
+        this.opacity = 0.6 * (1 - (this.age / this.maxAge));
+        
+        if (this.age >= this.maxAge || this.y < -20) {
+            this.active = false;
+        }
+    }
+}
+
+// Make TrackSegment available globally
+window.TrackSegment = TrackSegment;
+
+// Update Game class with improved ski tracks implementation
 class Game {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
@@ -710,6 +856,13 @@ class Game {
             right: false
         };
         
+        // Add audio state reference
+        this.audioState = audioState;
+        
+        // Add soundtrack reference and ensure it's playing if not muted
+        this.soundtrack = document.getElementById('soundtrack');
+        this.ensureSoundtrackPlaying();
+        
         // Initialize game
         this.bindEvents();
         this.setupTouchControls();
@@ -722,11 +875,138 @@ class Game {
             duration: 5000 // 5 seconds (reduced from 20000)
         };
 
-        // Add soundtrack reference
-        this.soundtrack = document.getElementById('soundtrack');
-        
         // Add game start time tracking for play duration
         this.gameStartTime = Date.now();
+
+        // Tree properties - with defensive defaults
+        this.treeImage = new Image();
+        this.treeImageLoaded = false;
+        this.lastTreeTime = 0;
+        this.treeInterval = 450;
+        this.treeProbability = 0.5;
+        this.maxTrees = 28;
+        this.clusterSize = { min: 1, max: 3 };
+        
+        // Initialize obstacles array if it doesn't exist
+        if (!this.obstacles) {
+            this.obstacles = [];
+        }
+        
+        // Progressive narrowing configuration
+        this.narrowingConfig = {
+            startScore: 500,
+            maxNarrowing: 120,
+            narrowingRate: 0.02,
+            gapFrequency: 1000,
+            gapChance: 0.3,
+            gapDuration: 300
+        };
+        
+        // Add visual indicator for tree boundary that player can see
+        this.boundaryIndicators = {
+            left: 50,
+            right: this.canvas ? (this.canvas.width - 50) : 350,
+            targetLeft: 50,
+            targetRight: this.canvas ? (this.canvas.width - 50) : 350,
+            transitionSpeed: 0.05
+        };
+        
+        // Load tree image with error handling
+        if (this.treeImage) {
+            this.treeImage.onload = () => {
+                console.log('Tree image loaded successfully');
+                this.treeImageLoaded = true;
+            };
+            
+            this.treeImage.onerror = (err) => {
+                console.error('Error loading tree image:', err);
+                // Game can still run without the tree image
+                this.treeImageLoaded = false;
+            };
+            
+            // Set image source last (after handlers are defined)
+            this.treeImage.src = 'snowtree.png';
+        }
+
+        // Add debug option - set to false in production
+        this.showHitboxes = false;
+
+        // Initialize ski tracks configuration
+        try {
+            this.tracks = {
+                leftSegments: [],
+                rightSegments: [],
+                lastPositions: {
+                    left: { x: 0, y: 0 },
+                    right: { x: 0, y: 0 }
+                },
+                lastAngles: {
+                    left: 0,
+                    right: 0
+                },
+                turnHistory: [], // Store recent turn data for smoother curves
+                frameCount: 0,
+                recordInterval: 2,
+                maxSegmentsPerSki: 100,
+                enabled: true,
+                skiDistance: 12,
+                // Control points for bezier curves
+                curveIntensity: 0.4 // Higher values = more pronounced curves
+            };
+            
+            console.log("Ski tracks system initialized");
+        } catch (e) {
+            console.error("Error initializing ski tracks:", e);
+            this.tracks = {
+                leftSegments: [],
+                rightSegments: [],
+                enabled: false
+            };
+        }
+
+        // Initialize corduroy patches with adjusted settings
+        try {
+            this.corduroy = {
+                patches: [],
+                lastPatchTime: 0,
+                patchInterval: 1200,
+                spawnChance: 0.5, // Decreased to 50%
+                maxPatches: 8,
+                enabled: true,
+                sections: [
+                    { active: false, x: 0, width: 0, nextY: 0 },
+                    { active: false, x: 0, width: 0, nextY: 0 }
+                ]
+            };
+            
+            console.log("Corduroy system initialized");
+        } catch (e) {
+            console.error("Error initializing corduroy:", e);
+            this.corduroy = {
+                patches: [],
+                enabled: false
+            };
+        }
+
+        // Initialize crud patches with reduced coverage settings
+        try {
+            this.crudSnow = {
+                patches: [],
+                lastPatchTime: 0,
+                patchInterval: 1000, // Keep at 1000ms
+                spawnChance: 0.4, // Keep at 0.4
+                maxPatches: 5, // Keep at 5
+                enabled: true
+            };
+            
+            console.log("Crud snow system initialized");
+        } catch (e) {
+            console.error("Error initializing crud snow:", e);
+            this.crudSnow = {
+                patches: [],
+                enabled: false
+            };
+        }
     }
 
     createTrackMarkers() {
@@ -882,6 +1162,229 @@ class Game {
         setTimeout(() => this.playSound('fast'), 0);
     }
 
+    // Calculate current narrowing amount based on score
+    calculateNarrowing() {
+        if (!this.narrowingConfig || !this.score) {
+            return 0;
+        }
+        
+        // No narrowing before start score
+        if (this.score < (this.narrowingConfig.startScore * (this.scoreMultiplier || 1))) {
+            return 0;
+        }
+        
+        // Calculate based on points past the start threshold
+        const baseScore = (this.score / (this.scoreMultiplier || 1)) - this.narrowingConfig.startScore;
+        const rawNarrowing = baseScore * this.narrowingConfig.narrowingRate;
+        
+        // Check if we should create a gap ("breathing room")
+        if (this.shouldCreateGap()) {
+            return 0; // No narrowing during gap
+        }
+        
+        return Math.min(this.narrowingConfig.maxNarrowing, Math.max(0, rawNarrowing));
+    }
+    
+    // Determine if there should be a gap - with defensive checks
+    shouldCreateGap() {
+        if (!this.narrowingConfig || !this.score) {
+            return false;
+        }
+        
+        const adjustedScore = Math.floor(this.score / (this.scoreMultiplier || 1));
+        
+        // Check if we're in a gap zone
+        if (adjustedScore < this.narrowingConfig.startScore) {
+            return false; // No gaps before narrowing starts
+        }
+        
+        // Get current section of the score
+        const scoreSection = Math.floor(
+            (adjustedScore - this.narrowingConfig.startScore) / 
+            this.narrowingConfig.gapFrequency
+        );
+        
+        // Calculate position within current section
+        const positionInSection = 
+            (adjustedScore - this.narrowingConfig.startScore) % 
+            this.narrowingConfig.gapFrequency;
+        
+        // Check if we're in the potential gap zone
+        const inGapZone = positionInSection < this.narrowingConfig.gapDuration;
+        
+        // Pseudo-random determination based on score section
+        const gapSeed = Math.sin(scoreSection * 12345) * 0.5 + 0.5; // 0-1 value
+        const createGap = inGapZone && gapSeed < this.narrowingConfig.gapChance;
+        
+        return createGap;
+    }
+    
+    // Update boundary indicators - with defensive checks
+    updateBoundaryIndicators() {
+        if (!this.boundaryIndicators || !this.canvas) {
+            return;
+        }
+        
+        const narrowing = this.calculateNarrowing();
+        
+        // Update target positions
+        this.boundaryIndicators.targetLeft = 50 + narrowing;
+        this.boundaryIndicators.targetRight = this.canvas.width - 50 - narrowing;
+        
+        // Smooth transition to target
+        this.boundaryIndicators.left += (
+            this.boundaryIndicators.targetLeft - this.boundaryIndicators.left
+        ) * this.boundaryIndicators.transitionSpeed;
+        
+        this.boundaryIndicators.right += (
+            this.boundaryIndicators.targetRight - this.boundaryIndicators.right
+        ) * this.boundaryIndicators.transitionSpeed;
+    }
+    
+    // Draw boundary indicators - with defensive checks
+    drawBoundaryIndicators() {
+        if (!this.ctx || !this.canvas || !this.boundaryIndicators || !this.narrowingConfig) {
+            return;
+        }
+        
+        // Only draw if narrowing has started
+        if (!this.score || this.score < (this.narrowingConfig.startScore * (this.scoreMultiplier || 1))) {
+            return;
+        }
+        
+        try {
+            const ctx = this.ctx;
+            
+            // Draw subtle gradient boundaries
+            const gradient = {
+                left: ctx.createLinearGradient(
+                    this.boundaryIndicators.left - 10, 
+                    0, 
+                    this.boundaryIndicators.left + 10, 
+                    0
+                ),
+                right: ctx.createLinearGradient(
+                    this.boundaryIndicators.right - 10, 
+                    0, 
+                    this.boundaryIndicators.right + 10, 
+                    0
+                )
+            };
+            
+            // Set gradient colors
+            gradient.left.addColorStop(0, 'rgba(255, 255, 255, 0.1)');
+            gradient.left.addColorStop(1, 'rgba(255, 255, 255, 0.5)');
+            
+            gradient.right.addColorStop(0, 'rgba(255, 255, 255, 0.5)');
+            gradient.right.addColorStop(1, 'rgba(255, 255, 255, 0.1)');
+            
+            // Draw left indicator
+            ctx.fillStyle = gradient.left;
+            ctx.fillRect(
+                this.boundaryIndicators.left - 10,
+                0,
+                10,
+                this.canvas.height
+            );
+            
+            // Draw right indicator
+            ctx.fillStyle = gradient.right;
+            ctx.fillRect(
+                this.boundaryIndicators.right,
+                0,
+                10,
+                this.canvas.height
+            );
+        } catch (e) {
+            console.error("Error drawing boundary indicators:", e);
+            // Silently fail - don't break the game if indicators can't be drawn
+        }
+    }
+    
+    spawnTreeCluster() {
+        // Skip if obstacles array doesn't exist
+        if (!this.obstacles) {
+            this.obstacles = [];
+            return;
+        }
+        
+        // Skip if we have too many active trees
+        const activeTrees = this.obstacles.filter(obs => obs instanceof Tree);
+        if (activeTrees.length >= this.maxTrees) {
+            return;
+        }
+        
+        // Skip if canvas isn't available
+        if (!this.canvas) {
+            return;
+        }
+        
+        try {
+            // Randomly choose side (left or right)
+            const side = Math.random() < 0.5 ? 'left' : 'right';
+            
+            // Get narrowing amount for tree positioning - with defensive check
+            const narrowing = this.calculateNarrowing();
+            
+            // Determine base position for this cluster with narrowing applied
+            let baseX;
+            if (side === 'left') {
+                // Left edge: position based on narrowing
+                baseX = narrowing + Math.random() * 40;
+            } else {
+                // Right edge: position based on narrowing
+                baseX = this.canvas.width - narrowing - Math.random() * 40;
+            }
+            
+            // Determine cluster size with weighted probabilities
+            const randomValue = Math.random();
+            let clusterSize;
+            if (randomValue < 0.5) {
+                clusterSize = 1;
+            } else if (randomValue < 0.8) {
+                clusterSize = 2;
+            } else {
+                clusterSize = 3;
+            }
+            
+            // Calculate approximate tree width for spacing
+            const approximateTreeWidth = 30;
+            
+            // Create cluster of trees with better spacing
+            for (let i = 0; i < clusterSize; i++) {
+                // Vary position within cluster - increased spacing
+                const clusterSpread = 60;
+                
+                // More controlled positioning for less overlap
+                const xVariation = (i / (clusterSize - 1 || 1)) * clusterSpread - (clusterSpread / 2);
+                
+                // Add some randomness to the evenly distributed positions
+                const randomOffset = (Math.random() - 0.5) * (approximateTreeWidth * 0.5);
+                
+                // More vertical staggering to reduce overlap
+                const yVariation = i * 30 + Math.random() * 30;
+                
+                const treeX = baseX + xVariation + randomOffset;
+                
+                // Create tree
+                const tree = new Tree(treeX, side);
+                
+                // Only set image if it's loaded
+                if (this.treeImageLoaded && this.treeImage) {
+                    tree.setImage(this.treeImage);
+                }
+                
+                tree.y = 650 + yVariation;
+                
+                // Add to obstacles array
+                this.obstacles.push(tree);
+            }
+        } catch (e) {
+            console.error("Error spawning tree cluster:", e);
+            // Continue game even if tree spawning fails
+        }
+    }
+
     updateSpeedLevel() {
         const currentScore = Math.floor(this.score / this.scoreMultiplier);
         
@@ -934,28 +1437,23 @@ class Game {
     }
 
     showSpeedIncreaseEffect() {
-        // Remove any existing speed up alerts first
-        const existingAlert = document.querySelector('.speed-up-alert');
-        if (existingAlert) {
-            existingAlert.remove();
-        }
-
-        const speedUpAlert = document.createElement('div');
-        speedUpAlert.className = 'speed-up-alert';
+        const speedAlert = document.createElement('div');
+        speedAlert.className = 'speed-up-alert';
         
-        speedUpAlert.innerHTML = `
+        speedAlert.innerHTML = `
             <div class="alert-text">SEND IT!</div>
-            <div class="level-text">LEVEL ${this.speedProgression.currentLevel + 1}</div>
+            <div class="level-text" style="margin-top: 15px;">LEVEL ${this.speedProgression.currentLevel + 1}</div>
         `;
         
-        document.querySelector('.game-container').appendChild(speedUpAlert);
+        document.querySelector('.game-container').appendChild(speedAlert);
 
+        // Reduce duration by 50% (from 3000ms to 1500ms)
         setTimeout(() => {
-            speedUpAlert.classList.add('fade-out');
+            speedAlert.classList.add('fade-out');
             setTimeout(() => {
-                speedUpAlert.remove();
+                speedAlert.remove();
             }, 500);
-        }, 3000);
+        }, 1500); // Changed from 3000 to 1500
     }
 
     showZigzaggerWarning() {
@@ -966,17 +1464,18 @@ class Game {
         warningAlert.innerHTML = `
             <div class="alert-text">WATCH OUT!</div>
             <div class="level-text">GONG SHOW AHEAD!</div>
-            <div class="level-text">LEVEL ${this.speedProgression.currentLevel + 1}</div>
+            <div class="level-text" style="margin-top: 15px;">LEVEL ${this.speedProgression.currentLevel + 1}</div>
         `;
         
         document.querySelector('.game-container').appendChild(warningAlert);
 
+        // Reduce duration by 50% (from 3000ms to 1500ms)
         setTimeout(() => {
             warningAlert.classList.add('fade-out');
             setTimeout(() => {
                 warningAlert.remove();
             }, 500);
-        }, 3000);
+        }, 1500); // Changed from 3000 to 1500
         
         this.speedProgression.levelUpMessageShown = true;
         
@@ -992,11 +1491,6 @@ class Game {
                 }).catch(e => console.error("Error playing fast sound:", e));
             }
         }, 100);
-        
-        // Activate zigzagger delay
-        this.zigzaggerDelay.active = true;
-        this.zigzaggerDelay.startTime = Date.now();
-        console.log("Zigzagger delay activated - waiting 5 seconds before first spawn");
     }
 
     handleCollision() {
@@ -1157,18 +1651,17 @@ class Game {
         // Update speed level based on score
         this.updateSpeedLevel();
 
-        // Update player movement with both keyboard and touch controls
+        // Update player movement with keyboard and touch controls
         const previousSkiAngle = this.player.skiAngle;
         let directionChanged = false;
         
         // Combine keyboard and touch inputs
-        const movingLeft = (this.keys['ArrowLeft'] || this.keys['a'] || this.touchControls.left);
-        const movingRight = (this.keys['ArrowRight'] || this.keys['d'] || this.touchControls.right);
+        const movingLeft = (this.keys['ArrowLeft'] || this.keys['a'] || this.touchControls?.left);
+        const movingRight = (this.keys['ArrowRight'] || this.keys['d'] || this.touchControls?.right);
         
         if (movingLeft && this.player.x > 0) {
             this.player.x -= this.player.speed;
             
-            // Check if direction actually changed
             if (previousSkiAngle <= 0) {
                 directionChanged = true;
             }
@@ -1177,7 +1670,6 @@ class Game {
         } else if (movingRight && this.player.x < this.canvas.width - this.player.width) {
             this.player.x += this.player.speed;
             
-            // Check if direction actually changed
             if (previousSkiAngle >= 0) {
                 directionChanged = true;
             }
@@ -1194,7 +1686,7 @@ class Game {
 
         // Update scroll position
         this.scroll.y += this.scroll.speed;
-        if (this.scroll.y >= 100) {
+        if (this.scroll.y > this.canvas.height) {
             this.scroll.y = 0;
         }
 
@@ -1206,10 +1698,26 @@ class Game {
             }
         });
 
-        // Spawn new obstacles
+        // Update boundary indicators
+        this.updateBoundaryIndicators();
+
+        // Only spawn tree clusters at level 2 or higher with updated narrowing
+        if (this.speedProgression && this.speedProgression.currentLevel >= 1) {
+            const currentTime = Date.now();
+            if (currentTime - this.lastTreeTime > this.treeInterval) {
+                if (Math.random() < this.treeProbability) {
+                    try {
+                        this.spawnTreeCluster();
+                    } catch (e) {
+                        console.error("Error in tree cluster spawning:", e);
+                    }
+                }
+                this.lastTreeTime = currentTime;
+            }
+        }
+
+        // Spawn other obstacles
         const currentTime = Date.now();
-        
-        // Always check for tumblers and stoppers
         if (currentTime - this.lastTumblerTime > this.tumblerInterval) {
             this.spawnTumbler();
         }
@@ -1218,26 +1726,59 @@ class Game {
             this.spawnStopperGroup();
         }
         
-        // Check for zigzaggers only at level 3+
-        this.spawnZigzagger(); // The check is now inside the method
-        
-        // Update obstacles
-        this.obstacles = this.obstacles.filter(obs => obs.active);
-        this.obstacles.forEach(obs => {
-            if (obs instanceof Zigzagger) {
-                obs.updateSpeed(this.currentSpeeds.zigzagger);
-            }
-            obs.update(this.scroll.speed);
-        });
+        this.spawnZigzagger();
 
-        // Check for collisions
+        // Update all obstacles - with defensive checks
+        if (this.obstacles) {
+            try {
+                this.obstacles = this.obstacles.filter(obs => obs && obs.active);
+                this.obstacles.forEach(obs => {
+                    if (obs) {
+                        if (obs instanceof Zigzagger && this.currentSpeeds) {
+                            obs.updateSpeed(this.currentSpeeds.zigzagger);
+                        }
+                        if (typeof obs.update === 'function') {
+                            obs.update(this.scroll.speed);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Error updating obstacles:", e);
+                // Reset obstacles array if it's corrupted
+                this.obstacles = [];
+            }
+        } else {
+            this.obstacles = [];
+        }
+
+        // Check collisions with all obstacles
         this.checkCollisions();
 
-        // Update score - faster accumulation
-        this.score += 2; // Increased from 1 to 2 for base score increment
-        const displayScore = Math.floor(this.score / this.scoreMultiplier); // Divided by 5 instead of 10
+        // Update score
+        this.score += 2;
+        const displayScore = Math.floor(this.score / this.scoreMultiplier);
         document.getElementById('score').textContent = 
             `SCORE: ${String(displayScore).padStart(6, '0')}`;
+
+        // Record player position for ski tracks
+        this.recordPlayerPosition();
+        
+        // Update track segments
+        this.updateTracks();
+
+        try {
+            // Update snow textures
+            this.updateCorduroy();
+            this.updateCrudSnow();
+            
+            // Record player position for ski tracks
+            this.recordPlayerPosition();
+            
+            // Update track segments
+            this.updateTracks();
+        } catch (e) {
+            console.error("Error in visual effects update cycle:", e);
+        }
     }
 
     checkCollisions() {
@@ -1281,62 +1822,102 @@ class Game {
                 y2: rightSkiEnd.y
             };
 
-            // Get obstacle hitbox
+            // Get obstacle hitbox - different for trees vs other obstacles
             let obsBox;
-            if (obs instanceof Tumbler) {
+            if (obs instanceof Tree) {
                 obsBox = obs.getHitbox();
-            } else if (obs instanceof Zigzagger) {
-                obsBox = obs.getHitbox();
+                
+                // Special handling for tree collision - check if intersection point
+                // is near the center of the tree to make brushing against edges more forgiving
+                const leftSkiCollision = this.lineIntersectsBox(leftSki, obsBox);
+                const rightSkiCollision = this.lineIntersectsBox(rightSki, obsBox);
+                
+                if (leftSkiCollision || rightSkiCollision) {
+                    // Calculate collision position
+                    const collisionPoint = leftSkiCollision || rightSkiCollision;
+                    
+                    // If it's just a brush with the edge, don't count as collision
+                    // This creates even more forgiveness for tree collisions
+                    if (collisionPoint && obs instanceof Tree) {
+                        const treeCenter = obs.x;
+                        const distanceFromCenter = Math.abs(collisionPoint.x - treeCenter);
+                        const collisionThreshold = obsBox.right - obsBox.left;
+                        
+                        // If collision is near the edge (>40% of distance to edge), ignore it
+                        // This means player can overlap with up to ~10% of the tree visual
+                        if (distanceFromCenter > (collisionThreshold * 0.4)) {
+                            continue; // Skip this collision
+                        }
+                    }
+                    
+                    this.handleCollision();
+                    break;
+                }
             } else {
-                // Default hitbox for other obstacles
+                // Regular obstacles use standard hitbox
                 obsBox = {
                     left: obs.x - obs.width/2,
                     right: obs.x + obs.width/2,
                     top: obs.y,
                     bottom: obs.y + obs.height
                 };
-            }
-
-            // Check if either ski intersects with obstacle
-            if (this.lineIntersectsBox(leftSki, obsBox) || 
-                this.lineIntersectsBox(rightSki, obsBox)) {
-                this.handleCollision();
-                break;
+                
+                // Check if either ski intersects with obstacle
+                if (this.lineIntersectsBox(leftSki, obsBox) || 
+                    this.lineIntersectsBox(rightSki, obsBox)) {
+                    this.handleCollision();
+                    break;
+                }
             }
         }
     }
 
     lineIntersectsBox(line, box) {
-        // Check if line segment intersects with rectangle
-        const lines = [
-            {x1: box.left, y1: box.top, x2: box.right, y2: box.top},
-            {x1: box.right, y1: box.top, x2: box.right, y2: box.bottom},
-            {x1: box.right, y1: box.bottom, x2: box.left, y2: box.bottom},
-            {x1: box.left, y1: box.bottom, x2: box.left, y2: box.top}
-        ];
-
-        for (let boxLine of lines) {
-            if (this.lineIntersectsLine(line, boxLine)) {
-                return true;
-            }
-        }
-
-        return false;
+        // Check if any part of the line intersects with the box
+        const left = this.lineIntersectsLine(
+            line.x1, line.y1, line.x2, line.y2,
+            box.left, box.top, box.left, box.bottom
+        );
+        
+        const right = this.lineIntersectsLine(
+            line.x1, line.y1, line.x2, line.y2,
+            box.right, box.top, box.right, box.bottom
+        );
+        
+        const top = this.lineIntersectsLine(
+            line.x1, line.y1, line.x2, line.y2,
+            box.left, box.top, box.right, box.top
+        );
+        
+        const bottom = this.lineIntersectsLine(
+            line.x1, line.y1, line.x2, line.y2,
+            box.left, box.bottom, box.right, box.bottom
+        );
+        
+        return left || right || top || bottom;
     }
 
-    lineIntersectsLine(line1, line2) {
-        const x1 = line1.x1, y1 = line1.y1;
-        const x2 = line1.x2, y2 = line1.y2;
-        const x3 = line2.x1, y3 = line2.y1;
-        const x4 = line2.x2, y4 = line2.y2;
-
-        const denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-        if (denominator === 0) return false;
-
-        const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denominator;
-        const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denominator;
-
-        return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+    lineIntersectsLine(x1, y1, x2, y2, x3, y3, x4, y4) {
+        const denominator = ((y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1));
+        
+        // Lines are parallel
+        if (denominator === 0) {
+            return false;
+        }
+        
+        const ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denominator;
+        const ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denominator;
+        
+        // Return false if the intersection is beyond line segments
+        if (ua < 0 || ua > 1 || ub < 0 || ub > 1) {
+            return false;
+        }
+        
+        // Return the intersection point
+        const x = x1 + ua * (x2 - x1);
+        const y = y1 + ua * (y2 - y1);
+        
+        return {x, y};
     }
 
     showGameOver() {
@@ -1347,7 +1928,7 @@ class Game {
                 <h2>GAME OVER</h2>
                 <p>FINAL SCORE</p>
                 <p>${formattedScore}</p>
-                <button onclick="location.reload()">CONTINUE?</button>
+                <button id="continueButton">CONTINUE?</button>
             </div>
         `;
         
@@ -1367,11 +1948,20 @@ class Game {
             'score': this.finalScore,
             'play_duration_seconds': playDurationSeconds
         });
-
-        // Make continue button touch-friendly
+        
+        // Make continue button work with both click and touch
         setTimeout(() => {
-            const continueButton = document.querySelector('.game-over-content button');
+            const continueButton = document.getElementById('continueButton');
             if (continueButton) {
+                // Use custom reload to ensure soundtrack continues
+                continueButton.addEventListener('click', () => {
+                    // Preserve soundtrack element
+                    const soundtrack = this.soundtrack;
+                    
+                    // Reload the page
+                    location.reload();
+                });
+                
                 continueButton.addEventListener('touchstart', function(e) {
                     e.preventDefault();
                     this.click();
@@ -1381,31 +1971,82 @@ class Game {
     }
 
     draw() {
-        // Clear canvas
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        try {
+            // Clear canvas
+            this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Draw snow background
-        this.ctx.fillStyle = '#fff';
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            // Draw snow background
+            this.ctx.fillStyle = '#fff';
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Draw track markers
-        this.ctx.strokeStyle = '#ddd';
-        this.ctx.lineWidth = 2;
-        this.trackMarkers.forEach(marker => {
-            this.ctx.beginPath();
-            this.ctx.moveTo(marker.x1, marker.y);
-            this.ctx.lineTo(marker.x2, marker.y);
-            this.ctx.stroke();
-        });
+            // Draw snow textures (before track markers, behind everything else)
+            try {
+                this.drawCorduroy();
+                this.drawCrudSnow();
+            } catch (e) {
+                console.error("Error drawing snow textures:", e);
+            }
 
-        // Draw obstacles
-        this.obstacles.forEach(obs => obs.draw(this.ctx));
+            // Draw track markers
+            if (typeof this.drawTrackMarkers === 'function') {
+                this.drawTrackMarkers();
+            }
+            
+            // Draw boundary indicators
+            try {
+                this.drawBoundaryIndicators();
+            } catch (e) {
+                console.error("Error drawing boundary indicators:", e);
+            }
 
-        // Draw player or crash animation
-        if (this.crashing) {
-            this.drawCrashingPlayer();
-        } else if (!this.gameOver) {
-            this.drawPlayer();
+            // Draw ski tracks with error handling
+            try {
+                this.drawTracks();
+            } catch (e) {
+                console.error("Error drawing ski tracks:", e);
+                // Disable tracks if drawing fails
+                if (this.tracks) {
+                    this.tracks.enabled = false;
+                }
+            }
+
+            // Draw obstacles with extensive error handling
+            if (this.obstacles && this.ctx) {
+                // Draw trees (before player so player appears in front)
+                try {
+                    const trees = this.obstacles.filter(obs => obs instanceof Tree);
+                    trees.forEach(tree => {
+                        if (tree && typeof tree.draw === 'function') {
+                            tree.draw(this.ctx);
+                        }
+                    });
+                } catch (e) {
+                    console.error("Error drawing trees:", e);
+                }
+
+                // Draw other obstacles
+                try {
+                    this.obstacles
+                        .filter(obs => obs && !(obs instanceof Tree))
+                        .forEach(obs => {
+                            if (typeof obs.draw === 'function') {
+                                obs.draw(this.ctx);
+                            }
+                        });
+                } catch (e) {
+                    console.error("Error drawing other obstacles:", e);
+                }
+            }
+
+            // Draw player
+            if (this.crashing) {
+                this.drawCrashingPlayer();
+            } else if (!this.gameOver) {
+                this.drawPlayer();
+            }
+        } catch (e) {
+            console.error("Critical error in draw method:", e);
+            // Continue game loop even if draw fails
         }
     }
 
@@ -1497,6 +2138,11 @@ class Game {
     }
 
     playSound(soundType) {
+        // Don't play sound effects if muted
+        if (this.audioState.soundEffectsMuted) {
+            return;
+        }
+        
         if (this.audio.debugLevel) {
             console.log(`Attempting to play ${soundType} sound (level: ${this.speedProgression.currentLevel})`);
         }
@@ -1620,6 +2266,602 @@ class Game {
             }
         }, { passive: false });
     }
+
+    ensureSoundtrackPlaying() {
+        // Check if soundtrack should be playing
+        if (this.soundtrack.paused && !this.audioState.soundtrackMuted) {
+            console.log('Soundtrack was paused, attempting to play...');
+            this.soundtrack.muted = this.audioState.soundtrackMuted;
+            this.soundtrack.play().catch(error => {
+                console.error('Could not play soundtrack in game constructor:', error);
+            });
+        }
+    }
+
+    // Ensure Tree class is in the global scope
+    initGame() {
+        // Make Tree class available globally
+        window.Tree = Tree;
+        
+        // ... other initialization code ...
+    }
+
+    // Calculate ski positions ensuring they remain parallel
+    calculateSkiPositions() {
+        if (!this.player) return null;
+        
+        try {
+            const playerX = this.player.x || 0;
+            const playerY = this.player.y || 0;
+            const skiAngle = this.player.skiAngle || 0;
+            const skiDistance = this.tracks.skiDistance;
+            const backOffset = 10;
+            
+            // Calculate perpendicular direction
+            const perpX = Math.sin(skiAngle);
+            const perpY = -Math.cos(skiAngle);
+            
+            // Track turn data for curve calculation
+            this.tracks.turnHistory.push({
+                angle: skiAngle,
+                time: Date.now()
+            });
+            
+            // Keep only recent turn history
+            if (this.tracks.turnHistory.length > 10) {
+                this.tracks.turnHistory.shift();
+            }
+            
+            // Left and right ski positions
+            const leftSkiX = playerX - (skiDistance / 2) * perpX;
+            const leftSkiY = playerY - (skiDistance / 2) * perpY + backOffset;
+            
+            const rightSkiX = playerX + (skiDistance / 2) * perpX;
+            const rightSkiY = playerY + (skiDistance / 2) * perpY + backOffset;
+            
+            return {
+                left: { x: leftSkiX, y: leftSkiY },
+                right: { x: rightSkiX, y: rightSkiY }
+            };
+        } catch (e) {
+            console.error("Error calculating ski positions:", e);
+            return null;
+        }
+    }
+    
+    // Record player position and create track segments
+    recordPlayerPosition() {
+        if (!this.tracks || !this.tracks.enabled) {
+            return;
+        }
+        
+        try {
+            this.tracks.frameCount++;
+            
+            // Always record during straightlining, otherwise use interval
+            const isMovingStraight = Math.abs(this.player.skiAngle) < 0.1;
+            const shouldRecord = isMovingStraight || 
+                (this.tracks.frameCount % this.tracks.recordInterval === 0);
+                
+            if (!shouldRecord) {
+                return;
+            }
+            
+            // Calculate ski positions
+            const skiPositions = this.calculateSkiPositions();
+            if (!skiPositions) return;
+            
+            // Initialize last positions if they're not set
+            if (!this.tracks.lastPositions.left.x && !this.tracks.lastPositions.left.y) {
+                this.tracks.lastPositions.left = skiPositions.left;
+                this.tracks.lastPositions.right = skiPositions.right;
+                this.tracks.lastAngles.left = this.player.skiAngle;
+                this.tracks.lastAngles.right = this.player.skiAngle;
+                return;
+            }
+            
+            // Only create new segments if skis have moved enough
+            const leftDist = Math.hypot(
+                skiPositions.left.x - this.tracks.lastPositions.left.x,
+                skiPositions.left.y - this.tracks.lastPositions.left.y
+            );
+            
+            const rightDist = Math.hypot(
+                skiPositions.right.x - this.tracks.lastPositions.right.x,
+                skiPositions.right.y - this.tracks.lastPositions.right.y
+            );
+            
+            // Create track segments for both skis
+            const minDistance = isMovingStraight ? 3 : 5;
+            
+            // Check if we're turning
+            const turningAmount = Math.abs(this.player.skiAngle - this.tracks.lastAngles.left);
+            const isTurning = turningAmount > 0.1;
+            
+            if (leftDist > minDistance) {
+                // Create left ski track
+                if (typeof TrackSegment === 'function') {
+                    this.tracks.leftSegments.push(new TrackSegment(
+                        skiPositions.left.x,
+                        skiPositions.left.y,
+                        this.player.skiAngle,
+                        true
+                    ));
+                    
+                    // Update last position and angle
+                    this.tracks.lastPositions.left = skiPositions.left;
+                    this.tracks.lastAngles.left = this.player.skiAngle;
+                    
+                    // Limit segments
+                    if (this.tracks.leftSegments.length > this.tracks.maxSegmentsPerSki) {
+                        this.tracks.leftSegments = this.tracks.leftSegments.slice(
+                            -this.tracks.maxSegmentsPerSki
+                        );
+                    }
+                }
+            }
+            
+            if (rightDist > minDistance) {
+                // Create right ski track
+                if (typeof TrackSegment === 'function') {
+                    this.tracks.rightSegments.push(new TrackSegment(
+                        skiPositions.right.x,
+                        skiPositions.right.y,
+                        this.player.skiAngle,
+                        false
+                    ));
+                    
+                    // Update last position and angle
+                    this.tracks.lastPositions.right = skiPositions.right;
+                    this.tracks.lastAngles.right = this.player.skiAngle;
+                    
+                    // Limit segments
+                    if (this.tracks.rightSegments.length > this.tracks.maxSegmentsPerSki) {
+                        this.tracks.rightSegments = this.tracks.rightSegments.slice(
+                            -this.tracks.maxSegmentsPerSki
+                        );
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Error recording player position for tracks:", e);
+            this.tracks.enabled = false;
+        }
+    }
+    
+    // Update all track segments
+    updateTracks() {
+        if (!this.tracks || !this.tracks.enabled) {
+            return;
+        }
+        
+        try {
+            const scrollSpeed = this.scroll ? (this.scroll.speed || 0) : 0;
+            
+            // Update and filter segments
+            this.tracks.leftSegments = this.tracks.leftSegments.filter(segment => {
+                if (segment && typeof segment.update === 'function') {
+                    segment.update(scrollSpeed);
+                    return segment.active;
+                }
+                return false;
+            });
+            
+            this.tracks.rightSegments = this.tracks.rightSegments.filter(segment => {
+                if (segment && typeof segment.update === 'function') {
+                    segment.update(scrollSpeed);
+                    return segment.active;
+                }
+                return false;
+            });
+        } catch (e) {
+            console.error("Error updating tracks:", e);
+            this.tracks.leftSegments = [];
+            this.tracks.rightSegments = [];
+        }
+    }
+    
+    // Calculate control points for a smooth curve between three points
+    calculateControlPoints(p0, p1, p2) {
+        if (!p0 || !p1 || !p2) return null;
+        
+        try {
+            const curveIntensity = this.tracks.curveIntensity;
+            
+            // Distance between points
+            const d01 = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+            const d12 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            
+            // Normalized distances
+            const f1 = curveIntensity * d01 / (d01 + d12);
+            const f2 = curveIntensity * d12 / (d01 + d12);
+            
+            // Control points
+            const c1 = {
+                x: p1.x - f1 * (p2.x - p0.x),
+                y: p1.y - f1 * (p2.y - p0.y)
+            };
+            
+            const c2 = {
+                x: p1.x + f2 * (p2.x - p0.x),
+                y: p1.y + f2 * (p2.y - p0.y)
+            };
+            
+            return { c1, c2 };
+        } catch (e) {
+            console.error("Error calculating control points:", e);
+            return null;
+        }
+    }
+    
+    // Draw smooth curve through a set of points
+    drawSmoothCurve(ctx, points) {
+        if (!ctx || !points || points.length < 2) return;
+        
+        try {
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            
+            // For the first segment, just draw a line
+            if (points.length === 2) {
+                ctx.lineTo(points[1].x, points[1].y);
+                return;
+            }
+            
+            // For each set of 3 consecutive points, draw a quadratic curve
+            for (let i = 0; i < points.length - 2; i++) {
+                const p0 = points[i];
+                const p1 = points[i + 1];
+                const p2 = points[i + 2];
+                
+                // Calculate control points
+                const cp = this.calculateControlPoints(p0, p1, p2);
+                if (!cp) continue;
+                
+                // Draw cubic bezier curve
+                if (i === 0) {
+                    // First segment
+                    ctx.quadraticCurveTo(cp.c1.x, cp.c1.y, p1.x, p1.y);
+                } else {
+                    ctx.bezierCurveTo(
+                        cp.c1.x, cp.c1.y,
+                        cp.c2.x, cp.c2.y,
+                        p1.x, p1.y
+                    );
+                }
+            }
+            
+            // For the last segment
+            const lastIndex = points.length - 1;
+            ctx.lineTo(points[lastIndex].x, points[lastIndex].y);
+            
+            ctx.stroke();
+        } catch (e) {
+            console.error("Error drawing smooth curve:", e);
+        }
+    }
+    
+    // Draw ski tracks with smooth curves
+    drawTracks() {
+        if (!this.tracks || !this.tracks.enabled || !this.ctx) {
+            return;
+        }
+        
+        try {
+            const ctx = this.ctx;
+            
+            // Draw each ski's track as a smooth curved path
+            [
+                { segments: this.tracks.leftSegments, label: 'left' },
+                { segments: this.tracks.rightSegments, label: 'right' }
+            ].forEach(({ segments, label }) => {
+                if (!segments || segments.length < 2) return;
+                
+                // Find segments that belong together (no large gaps)
+                const paths = [];
+                let currentPath = [segments[0]];
+                
+                for (let i = 1; i < segments.length; i++) {
+                    const segment = segments[i];
+                    const prevSegment = segments[i-1];
+                    
+                    if (!segment || !prevSegment) continue;
+                    
+                    // Check if there's a large gap
+                    const distance = Math.hypot(
+                        segment.x - prevSegment.x, 
+                        segment.y - prevSegment.y
+                    );
+                    
+                    if (distance > 30) {
+                        // End current path and start a new one
+                        if (currentPath.length > 1) {
+                            paths.push([...currentPath]);
+                        }
+                        currentPath = [segment];
+                    } else {
+                        // Continue current path
+                        currentPath.push(segment);
+                    }
+                }
+                
+                // Add the last path if it has points
+                if (currentPath.length > 1) {
+                    paths.push(currentPath);
+                }
+                
+                // Draw each path with smooth curves
+                paths.forEach(path => {
+                    if (path.length < 2) return;
+                    
+                    const points = path.map(segment => ({
+                        x: segment.x,
+                        y: segment.y
+                    }));
+                    
+                    // Set style based on first segment
+                    ctx.strokeStyle = `rgba(200, 200, 210, ${path[0].opacity})`;
+                    ctx.lineWidth = path[0].width;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    
+                    // For longer paths, apply smooth curve rendering
+                    if (path.length >= 3) {
+                        this.drawSmoothCurve(ctx, points);
+                    } else {
+                        // For short paths, just draw lines
+                        ctx.beginPath();
+                        ctx.moveTo(points[0].x, points[0].y);
+                        for (let i = 1; i < points.length; i++) {
+                            ctx.lineTo(points[i].x, points[i].y);
+                        }
+                        ctx.stroke();
+                    }
+                });
+            });
+        } catch (e) {
+            console.error("Error drawing tracks:", e);
+            this.tracks.enabled = false;
+        }
+    }
+
+    // Spawn new corduroy patch with adjusted width
+    spawnCorduroyPatch() {
+        if (!this.corduroy || !this.corduroy.enabled || !this.canvas) {
+            return;
+        }
+        
+        try {
+            // Skip if we have too many patches
+            if (this.corduroy.patches.length >= this.corduroy.maxPatches) {
+                return;
+            }
+            
+            // Choose a section to spawn into (0 or 1)
+            let sectionIndex = Math.floor(Math.random() * 2);
+            let section = this.corduroy.sections[sectionIndex];
+            
+            // If both sections are inactive, choose randomly and set up a new section
+            if (!section.active && !this.corduroy.sections[1-sectionIndex].active) {
+                // Set up a new section with the narrower width
+                const minX = 50;
+                const maxWidth = this.canvas.width - 100;
+                const width = 100 + Math.random() * 40; // 100-140px for narrower sections
+                
+                // Calculate x position (keep away from edges)
+                const x = minX + Math.random() * (maxWidth - width);
+                
+                section.active = true;
+                section.x = x;
+                section.width = width;
+                section.nextY = this.canvas.height + 20;
+            }
+            
+            // If selected section is inactive but other is active, use the active one
+            if (!section.active && this.corduroy.sections[1-sectionIndex].active) {
+                sectionIndex = 1-sectionIndex;
+                section = this.corduroy.sections[sectionIndex];
+            }
+            
+            // If we have an active section, spawn a new patch in it
+            if (section.active) {
+                // Get properties from section
+                const x = section.x;
+                const width = section.width;
+                const y = section.nextY;
+                
+                // Size with some variation in height only
+                const height = 500 + Math.random() * 200; // 500-700px tall
+                
+                // Slight random angle (very slight for continuity)
+                const maxAngle = 0.05; // About 3 degrees max
+                const angle = (Math.random() * 2 - 1) * maxAngle;
+                
+                // Create patch and add to array
+                if (typeof CorduroyPatch === 'function') {
+                    this.corduroy.patches.push(new CorduroyPatch(
+                        x, y, width, height, angle
+                    ));
+                    
+                    // Update section's next spawn position
+                    section.nextY = y + height - 50; // Overlap by 50px for continuity
+                    
+                    // Check if section has extended far enough
+                    // If we've spawned a long enough section, consider ending it
+                    if (Math.random() < 0.2 && section.nextY > this.canvas.height + 1000) {
+                        section.active = false;
+                    }
+                }
+            } else {
+                // All sections inactive - set up a new one with narrower width
+                const minX = 50;
+                const maxWidth = this.canvas.width - 100;
+                const width = 100 + Math.random() * 40; // 100-140px
+                const x = minX + Math.random() * (maxWidth - width);
+                
+                section.active = true;
+                section.x = x;
+                section.width = width;
+                section.nextY = this.canvas.height + 20;
+                
+                // Then spawn first patch in new section
+                const height = 500 + Math.random() * 200;
+                const angle = (Math.random() * 2 - 1) * 0.05;
+                
+                if (typeof CorduroyPatch === 'function') {
+                    this.corduroy.patches.push(new CorduroyPatch(
+                        x, this.canvas.height + 20, width, height, angle
+                    ));
+                    
+                    section.nextY = this.canvas.height + 20 + height - 50;
+                }
+            }
+        } catch (e) {
+            console.error("Error spawning corduroy patch:", e);
+        }
+    }
+    
+    // Update corduroy patches
+    updateCorduroy() {
+        if (!this.corduroy || !this.corduroy.enabled) {
+            return;
+        }
+        
+        try {
+            const scrollSpeed = this.scroll ? (this.scroll.speed || 0) : 0;
+            
+            // Update existing patches
+            this.corduroy.patches = this.corduroy.patches.filter(patch => {
+                if (patch && typeof patch.update === 'function') {
+                    patch.update(scrollSpeed);
+                    return patch.active;
+                }
+                return false;
+            });
+            
+            // Spawn new patches periodically
+            const currentTime = Date.now();
+            if (currentTime - this.corduroy.lastPatchTime > this.corduroy.patchInterval) {
+                if (Math.random() < this.corduroy.spawnChance) {
+                    this.spawnCorduroyPatch();
+                }
+                this.corduroy.lastPatchTime = currentTime;
+            }
+        } catch (e) {
+            console.error("Error updating corduroy:", e);
+            this.corduroy.patches = [];
+        }
+    }
+    
+    // Draw corduroy patches
+    drawCorduroy() {
+        if (!this.corduroy || !this.corduroy.enabled || !this.ctx) {
+            return;
+        }
+        
+        try {
+            // Draw each patch
+            this.corduroy.patches.forEach(patch => {
+                if (patch && typeof patch.draw === 'function') {
+                    patch.draw(this.ctx);
+                }
+            });
+        } catch (e) {
+            console.error("Error drawing corduroy:", e);
+            this.corduroy.enabled = false;
+        }
+    }
+
+    // Spawn new crud snow patch with reduced size
+    spawnCrudPatch() {
+        if (!this.crudSnow || !this.crudSnow.enabled || !this.canvas) {
+            return;
+        }
+        
+        try {
+            // Skip if we have too many patches
+            if (this.crudSnow.patches.length >= this.crudSnow.maxPatches) {
+                return;
+            }
+            
+            // Random position - same positioning logic
+            const minX = 20;
+            const maxX = this.canvas.width - 300;
+            const x = minX + Math.random() * (maxX - minX);
+            
+            // Keep the reduced size
+            const width = 180 + Math.random() * 100; // Keep at 180-280px
+            const height = 220 + Math.random() * 120; // Keep at 220-340px
+            
+            // Start below screen
+            const y = this.canvas.height + 20;
+            
+            // Create patch and add to array
+            if (typeof CrudPatch === 'function') {
+                this.crudSnow.patches.push(new CrudPatch(
+                    x, y, width, height
+                ));
+            }
+        } catch (e) {
+            console.error("Error spawning crud patch:", e);
+        }
+    }
+    
+    // Update crud snow patches
+    updateCrudSnow() {
+        if (!this.crudSnow || !this.crudSnow.enabled) {
+            return;
+        }
+        
+        try {
+            const scrollSpeed = this.scroll ? (this.scroll.speed || 0) : 0;
+            
+            // Update existing patches
+            this.crudSnow.patches = this.crudSnow.patches.filter(patch => {
+                if (patch && typeof patch.update === 'function') {
+                    patch.update(scrollSpeed);
+                    return patch.active;
+                }
+                return false;
+            });
+            
+            // Spawn new patches periodically
+            const currentTime = Date.now();
+            if (currentTime - this.crudSnow.lastPatchTime > this.crudSnow.patchInterval) {
+                if (Math.random() < this.crudSnow.spawnChance) {
+                    this.spawnCrudPatch();
+                }
+                this.crudSnow.lastPatchTime = currentTime;
+            }
+        } catch (e) {
+            console.error("Error updating crud snow:", e);
+            this.crudSnow.patches = [];
+        }
+    }
+    
+    // Draw crud snow patches
+    drawCrudSnow() {
+        if (!this.crudSnow || !this.crudSnow.enabled || !this.ctx) {
+            return;
+        }
+        
+        try {
+            // Draw each patch
+            this.crudSnow.patches.forEach(patch => {
+                if (patch && typeof patch.draw === 'function') {
+                    patch.draw(this.ctx);
+                }
+            });
+        } catch (e) {
+            console.error("Error drawing crud snow:", e);
+            this.crudSnow.enabled = false;
+        }
+    }
+}
+
+// Make sure Tree class is available
+if (typeof Tree !== 'function') {
+    window.Tree = Tree;
 }
 
 // Google Analytics event tracking function
@@ -1632,20 +2874,92 @@ function sendGAEvent(eventName, eventParams = {}) {
 
 // Start screen handling
 document.addEventListener('DOMContentLoaded', function() {
-    // Track page visit
-    sendGAEvent('page_view', {
-        'page_title': 'Jerry World: Send It!',
-        'page_location': window.location.href
-    });
+    // Load audio preferences
+    audioState.loadPreferences();
     
     const startScreen = document.getElementById('startScreen');
     const startButton = document.getElementById('startButton');
     const gameContainer = document.querySelector('.game-container');
     const soundtrack = document.getElementById('soundtrack');
+    const soundtrackToggle = document.getElementById('soundtrackToggle');
+    const soundEffectsToggle = document.getElementById('soundEffectsToggle');
     
-    // Set soundtrack volume lower than sound effects
+    // Set soundtrack volume
     soundtrack.volume = 0.3;
+    soundtrack.muted = audioState.soundtrackMuted;
     
+    // Initialize toggle buttons based on loaded preferences
+    updateToggleButton(soundtrackToggle, !audioState.soundtrackMuted);
+    updateToggleButton(soundEffectsToggle, !audioState.soundEffectsMuted);
+    
+    // Soundtrack toggle
+    soundtrackToggle.addEventListener('click', function() {
+        const isActive = this.classList.contains('active');
+        audioState.soundtrackMuted = isActive;
+        updateToggleButton(this, !isActive);
+        
+        // Apply mute state to soundtrack
+        soundtrack.muted = audioState.soundtrackMuted;
+        
+        // Save preferences
+        audioState.savePreferences();
+        
+        // Track event
+        sendGAEvent('audio_setting_changed', {
+            'setting': 'soundtrack',
+            'state': audioState.soundtrackMuted ? 'muted' : 'unmuted'
+        });
+    });
+    
+    // Sound effects toggle
+    soundEffectsToggle.addEventListener('click', function() {
+        const isActive = this.classList.contains('active');
+        audioState.soundEffectsMuted = isActive;
+        updateToggleButton(this, !isActive);
+        
+        // Save preferences
+        audioState.savePreferences();
+        
+        // Track event
+        sendGAEvent('audio_setting_changed', {
+            'setting': 'sound_effects',
+            'state': audioState.soundEffectsMuted ? 'muted' : 'unmuted'
+        });
+    });
+    
+    // Helper function to update toggle button appearance
+    function updateToggleButton(button, isActive) {
+        if (isActive) {
+            button.classList.add('active');
+            button.classList.remove('inactive');
+            button.setAttribute('aria-pressed', 'false');
+            
+            // Use simpler icons
+            if (button.id === 'soundtrackToggle') {
+                button.querySelector('.toggle-icon').textContent = '♫';
+            } else {
+                button.querySelector('.toggle-icon').textContent = '♪';
+            }
+        } else {
+            button.classList.remove('active');
+            button.classList.add('inactive');
+            button.setAttribute('aria-pressed', 'true');
+            button.querySelector('.toggle-icon').textContent = '✕';
+        }
+    }
+    
+    // Add touch events to toggle buttons
+    soundtrackToggle.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        this.click();
+    });
+    
+    soundEffectsToggle.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        this.click();
+    });
+    
+    // Add click event to start button
     startButton.addEventListener('click', function() {
         // Hide start screen
         startScreen.style.display = 'none';
@@ -1653,8 +2967,8 @@ document.addEventListener('DOMContentLoaded', function() {
         // Show game container
         gameContainer.style.display = 'block';
         
-        // Start the soundtrack
-        playSoundtrack();
+        // Start the soundtrack with user interaction
+        startSoundtrack();
         
         // Track game start
         sendGAEvent('game_start', {
@@ -1665,21 +2979,73 @@ document.addEventListener('DOMContentLoaded', function() {
         new Game();
     });
     
-    // Function to play soundtrack
-    function playSoundtrack() {
-        soundtrack.play().catch(error => {
-            console.error("Error playing soundtrack:", error);
-            document.addEventListener('click', () => {
-                soundtrack.play().catch(e => console.error("Still can't play soundtrack:", e));
-            }, { once: true });
-        });
-    }
-
-    // Make start button touch-friendly
+    // Add touch event to start button
     startButton.addEventListener('touchstart', function(e) {
-        e.preventDefault(); // Prevent default touch behavior
-        this.click(); // Trigger the click event
+        e.preventDefault();
+        this.click();
     });
+    
+    // Function to start soundtrack with better browser compatibility
+    function startSoundtrack() {
+        // Create a new audio context on user interaction
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) {
+            // Initialize audio context to unlock audio on iOS
+            const audioContext = new AudioContext();
+            
+            // Resume audio context if it's suspended
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        }
+        
+        // Try multiple approaches to start the soundtrack
+        const playPromise = soundtrack.play();
+        
+        if (playPromise !== undefined) {
+            playPromise.then(() => {
+                console.log('Soundtrack started successfully');
+            }).catch(error => {
+                console.error('Error playing soundtrack:', error);
+                
+                // Fallback method: try again after a short delay
+                setTimeout(() => {
+                    soundtrack.play().catch(e => {
+                        console.error('Second attempt failed:', e);
+                        
+                        // Last resort: add a manual play button
+                        if (!document.getElementById('audioFix')) {
+                            addAudioFixButton();
+                        }
+                    });
+                }, 1000);
+            });
+        }
+    }
+    
+    // Function to add a temporary audio fix button if needed
+    function addAudioFixButton() {
+        const audioFixButton = document.createElement('button');
+        audioFixButton.id = 'audioFix';
+        audioFixButton.textContent = 'Enable Music';
+        audioFixButton.style.position = 'absolute';
+        audioFixButton.style.top = '10px';
+        audioFixButton.style.right = '10px';
+        audioFixButton.style.zIndex = '1000';
+        audioFixButton.style.padding = '5px 10px';
+        audioFixButton.style.backgroundColor = '#000';
+        audioFixButton.style.color = '#fff';
+        audioFixButton.style.border = '2px solid #fff';
+        audioFixButton.style.fontFamily = "'Press Start 2P', cursive";
+        audioFixButton.style.fontSize = '10px';
+        
+        audioFixButton.addEventListener('click', function() {
+            soundtrack.play();
+            this.remove();
+        });
+        
+        document.body.appendChild(audioFixButton);
+    }
 });
 
 // Prevent default touch behavior on the document
@@ -1692,4 +3058,291 @@ document.addEventListener('touchstart', function(e) {
 // Prevent pull-to-refresh and other browser gestures
 document.body.addEventListener('touchmove', function(e) {
     e.preventDefault();
-}, { passive: false }); 
+}, { passive: false });
+
+// Add a global function to check and fix audio
+window.fixAudio = function() {
+    const soundtrack = document.getElementById('soundtrack');
+    if (soundtrack && soundtrack.paused) {
+        soundtrack.play();
+    }
+};
+
+// Try to unlock audio on first user interaction with the page
+document.addEventListener('click', function audioUnlock() {
+    window.fixAudio();
+    document.removeEventListener('click', audioUnlock);
+}, { once: true });
+
+document.addEventListener('touchstart', function audioUnlockTouch() {
+    window.fixAudio();
+    document.removeEventListener('touchstart', audioUnlockTouch);
+}, { once: true, passive: false }); 
+
+// Update the CorduroyPatch class with the requested changes
+class CorduroyPatch {
+    constructor(x, y, width, height, angle) {
+        this.x = x;
+        this.y = y;
+        this.width = width || 120; // Reverted to 120px width
+        this.height = height || 500; // Keeping the longer height
+        this.angle = angle || 0;
+        this.opacity = 0.8;
+        this.lineSpacing = 5 + Math.random() * 3;
+        this.lineThickness = 1;
+        this.active = true;
+    }
+    
+    update(scrollSpeed) {
+        // Move with scroll
+        this.y -= scrollSpeed;
+        
+        // Deactivate when off screen
+        if (this.y + this.height < -50) {
+            this.active = false;
+        }
+    }
+    
+    draw(ctx) {
+        if (!ctx) return;
+        
+        try {
+            // Skip if completely off screen
+            if (this.y > 650 || this.y + this.height < 0) {
+                return;
+            }
+            
+            // Save context state
+            ctx.save();
+            
+            // Set up clipping region for the patch
+            ctx.beginPath();
+            ctx.rect(this.x, this.y, this.width, this.height);
+            ctx.clip();
+            
+            // Set line style
+            ctx.strokeStyle = `rgba(204, 204, 204, ${this.opacity})`;
+            ctx.lineWidth = this.lineThickness;
+            
+            // Calculate number of lines based on spacing
+            const numLines = Math.ceil(this.width / this.lineSpacing) + 4;
+            
+            // Apply rotation if needed
+            ctx.translate(this.x + this.width/2, this.y + this.height/2);
+            ctx.rotate(this.angle);
+            ctx.translate(-(this.x + this.width/2), -(this.y + this.height/2));
+            
+            // Draw corduroy lines with restored waviness
+            for (let i = -2; i < numLines; i++) {
+                const xPos = this.x + i * this.lineSpacing;
+                
+                // Determine waviness for this line (restored)
+                const hasWaviness = Math.random() < 0.3;
+                const waviness = hasWaviness ? 2 : 0; // Amount of wave in pixels
+                
+                ctx.beginPath();
+                ctx.moveTo(xPos, this.y - 20);
+                
+                // Draw with or without waviness
+                if (waviness > 0) {
+                    // Draw wavy line
+                    for (let y = this.y - 20; y < this.y + this.height + 20; y += 5) {
+                        const xOffset = Math.sin((y - this.y) / 20) * waviness;
+                        ctx.lineTo(xPos + xOffset, y);
+                    }
+                } else {
+                    // Draw straight line
+                    ctx.lineTo(xPos, this.y + this.height + 20);
+                }
+                
+                ctx.stroke();
+            }
+            
+            // Restore context
+            ctx.restore();
+        } catch (e) {
+            console.error("Error drawing corduroy:", e);
+        }
+    }
+} 
+
+// Updated CrudPatch class with original pixel density but reduced opacity
+class CrudPatch {
+    constructor(x, y, width, height) {
+        this.x = x;
+        this.y = y;
+        this.width = width || 280; // Wider patches
+        this.height = height || 360; // Taller patches
+        this.opacity = 0.5; // Keeping at 50%
+        this.active = true;
+        
+        // Generate irregular patch shape
+        this.shape = this.generateIrregularShape();
+        
+        // Generate pixelated features
+        this.pixels = [];
+        this.generatePixels();
+    }
+    
+    // Create an irregular outline for the patch
+    generateIrregularShape() {
+        const points = 8 + Math.floor(Math.random() * 4); // 8-11 points
+        const vertices = [];
+        
+        for (let i = 0; i < points; i++) {
+            const angle = (i / points) * Math.PI * 2;
+            // Base radius is half the width/height, with variation
+            const radiusX = (this.width / 2) * (0.7 + Math.random() * 0.6); // 70-130% of radius
+            const radiusY = (this.height / 2) * (0.7 + Math.random() * 0.6); // 70-130% of radius
+            
+            vertices.push({
+                x: (this.width / 2) + Math.cos(angle) * radiusX,
+                y: (this.height / 2) + Math.sin(angle) * radiusY
+            });
+        }
+        
+        return vertices;
+    }
+    
+    // Check if a point is inside the irregular shape
+    isInside(x, y) {
+        // Simple point-in-polygon algorithm
+        let inside = false;
+        for (let i = 0, j = this.shape.length - 1; i < this.shape.length; j = i++) {
+            const xi = this.shape[i].x, yi = this.shape[i].y;
+            const xj = this.shape[j].x, yj = this.shape[j].y;
+            
+            const intersect = ((yi > y) !== (yj > y)) &&
+                (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+    
+    // Generate pixelated texture with original density
+    generatePixels() {
+        // Generate a grid of potential pixel positions
+        const pixelSize = 4;
+        const gridSpacing = 6; // Reverted back to original 6 (from 8)
+        
+        const gridWidth = Math.ceil(this.width / gridSpacing);
+        const gridHeight = Math.ceil(this.height / gridSpacing);
+        
+        // Fill rate - reverted to original
+        const fillRate = 0.2; // Reverted back to original 0.2 (from 0.1)
+        
+        // Create pixels
+        for (let gridY = 0; gridY < gridHeight; gridY++) {
+            for (let gridX = 0; gridX < gridWidth; gridX++) {
+                const x = gridX * gridSpacing + (Math.random() * 2 - 1);
+                const y = gridY * gridSpacing + (Math.random() * 2 - 1);
+                
+                if (this.isInside(x, y) && Math.random() < fillRate) {
+                    if (Math.random() < 0.8) {
+                        this.addPixel(x, y, pixelSize);
+                    } else {
+                        this.addPixelCluster(x, y, pixelSize);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Add a single pixel
+    addPixel(x, y, size) {
+        // Vary the shade of gray
+        // Use black for some pixels as in the example image
+        const isBlack = Math.random() < 0.15; // 15% black pixels
+        const shade = isBlack ? 0 : 120 + Math.floor(Math.random() * 120); // Either black or 120-240 (medium to light gray)
+        
+        this.pixels.push({
+            x: x,
+            y: y,
+            size: size * (0.8 + Math.random() * 0.4), // Slight size variation
+            shade: shade
+        });
+    }
+    
+    // Add a small cluster of 2-4 connected pixels
+    addPixelCluster(centerX, centerY, baseSize) {
+        const clusterSize = 2 + Math.floor(Math.random() * 3); // 2-4 pixels
+        
+        // Same color for all pixels in cluster
+        const isBlack = Math.random() < 0.15; // 15% black clusters
+        const shade = isBlack ? 0 : 120 + Math.floor(Math.random() * 120);
+        
+        // Add center pixel
+        this.pixels.push({
+            x: centerX,
+            y: centerY,
+            size: baseSize * (0.8 + Math.random() * 0.4),
+            shade: shade
+        });
+        
+        // Add satellite pixels
+        for (let i = 1; i < clusterSize; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const distance = baseSize * 1.1; // Slightly more than size to create connected look
+            
+            this.pixels.push({
+                x: centerX + Math.cos(angle) * distance,
+                y: centerY + Math.sin(angle) * distance,
+                size: baseSize * (0.7 + Math.random() * 0.4), // Slightly smaller
+                shade: shade
+            });
+        }
+    }
+    
+    update(scrollSpeed) {
+        // Move with scroll
+        this.y -= scrollSpeed;
+        
+        // Deactivate when off screen
+        if (this.y + this.height < -50) {
+            this.active = false;
+        }
+    }
+    
+    draw(ctx) {
+        if (!ctx) return;
+        
+        try {
+            // Skip if off screen
+            if (this.y > 650 || this.y + this.height < 0) {
+                return;
+            }
+            
+            // Draw all pixels
+            this.pixels.forEach(pixel => {
+                ctx.fillStyle = `rgba(${pixel.shade}, ${pixel.shade}, ${pixel.shade}, ${this.opacity})`;
+                ctx.fillRect(
+                    this.x + pixel.x - pixel.size/2,
+                    this.y + pixel.y - pixel.size/2,
+                    pixel.size,
+                    pixel.size
+                );
+            });
+            
+            // Debug: draw patch outline
+            // ctx.strokeStyle = 'rgba(255, 0, 0, 0.2)';
+            // ctx.beginPath();
+            // ctx.moveTo(this.x + this.shape[0].x, this.y + this.shape[0].y);
+            // for (let i = 1; i < this.shape.length; i++) {
+            //     ctx.lineTo(this.x + this.shape[i].x, this.y + this.shape[i].y);
+            // }
+            // ctx.closePath();
+            // ctx.stroke();
+        } catch (e) {
+            console.error("Error drawing crud snow:", e);
+        }
+    }
+}
+
+// Make CrudPatch available globally
+window.CrudPatch = CrudPatch;
+
+// Initialize snow textures when game loads
+window.addEventListener('load', function() {
+    window.CorduroyPatch = CorduroyPatch;
+    window.CrudPatch = CrudPatch;
+});

@@ -1,0 +1,36 @@
+{"frames": [
+
+{
+	"filename": "foliagePack_005.png",
+	"frame": {"x":0,"y":0,"w":102,"h":207},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":102,"h":207},
+	"sourceSize": {"w":102,"h":207}
+},
+{
+	"filename": "foliagePack_029.png",
+	"frame": {"x":0,"y":207,"w":102,"h":211},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":102,"h":211},
+	"sourceSize": {"w":102,"h":211}
+},
+{
+	"filename": "foliagePack_032.png",
+	"frame": {"x":0,"y":418,"w":102,"h":207},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":102,"h":207},
+	"sourceSize": {"w":102,"h":207}
+}],
+"meta": {
+	"app": "https://www.codeandweb.com/texturepacker",
+	"version": "1.0",
+	"image": "tree_sprite2.png",
+	"format": "RGBA8888",
+	"size": {"w":102,"h":625},
+	"scale": "1",
+	"smartupdate": "$TexturePacker:SmartUpdate:29d8641ba1714d8ec740463e553ffdde:0ebd4a89a60dab99bf4f0a8659f7a209:5197e2379618f1a37408004da00e795d$"
+}
+}
